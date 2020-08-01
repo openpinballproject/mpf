@@ -3,15 +3,16 @@ import time
 
 from unittest.mock import MagicMock
 
-from mpf.core.rgb_color import RGBColor
-from mpf.tests.MpfTestCase import MpfTestCase
+from mpf.platforms.interfaces.driver_platform_interface import PulseSettings
+from mpf.tests.MpfTestCase import MpfTestCase, test_config
 
 
 class TestShows(MpfTestCase):
-    def getConfigFile(self):
+
+    def get_config_file(self):
         return 'test_shows.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/shows/'
 
     def get_platform(self):
@@ -105,82 +106,70 @@ class TestShows(MpfTestCase):
 
         # GI should start out disabled
         self.assertLightChannel("gi_01", 0)
-
-        # Make sure all required shows are loaded
-        start_time = time.time()
-        while (not (self.machine.shows['test_show1'].loaded and
-                    self.machine.shows['test_show2'].loaded and
-                    self.machine.shows['test_show3'].loaded) and
-                time.time() < start_time + 10):
-            self.advance_time_and_run()
-
-        self.assertTrue(self.machine.shows['test_show1'].loaded)
         self.assertEqual(self.machine.shows['test_show1'].total_steps, 5)
 
         # Start mode1 mode (should automatically start the test_show1 show)
         self.machine.events.post('start_mode1')
         self.advance_time_and_run(.2)
         self.assertTrue(self.machine.mode_controller.is_active('mode1'))
-        self.assertTrue(self.machine.modes.mode1.active)
-        self.assertIn(self.machine.modes.mode1,
+        self.assertTrue(self.machine.modes["mode1"].active)
+        self.assertIn(self.machine.modes["mode1"],
                       self.machine.mode_controller.active_modes)
-        self.assertTrue(self.machine.shows['test_show1'].running)
 
         # Grab the running show instance
-        running_show1 = [x for x in self.machine.shows['test_show1'].running if
-                         x.name.startswith('test_show1')][0]
+        running_show1 = self.machine.show_player.instances['mode1']['show_player']['test_show1']
         self.assertIsNotNone(running_show1)
 
         # Make sure the show is running at the proper priority (of the mode)
-        self.assertEqual(running_show1.priority, 200)
+        self.assertEqual(running_show1.show_config.priority, 200)
 
         # Check LEDs, lights, and GI after first show step
         self.assertLightColor("led_01", '006400')
-        self.assertEqual(200, self.machine.lights.led_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_01"].stack[0].priority)
         self.assertLightColor("led_02", 'CCCCCC')
-        self.assertEqual(200, self.machine.lights.led_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_02"].stack[0].priority)
         self.assertLightChannel("light_01", 204)
-        self.assertEqual(200, self.machine.lights.light_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_01"].stack[0].priority)
         self.assertLightChannel("light_02", 120)
-        self.assertEqual(200, self.machine.lights.light_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_02"].stack[0].priority)
         self.assertLightChannel("gi_01", 255)
 
         # Check LEDs, lights, and GI after 2nd step
         self.advance_time_and_run()
         self.assertLightColor("led_01", 'DarkGreen')
-        self.assertEqual(200, self.machine.lights.led_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_01"].stack[0].priority)
 
         self.assertLightColor("led_02", 'Black')
-        self.assertEqual(200, self.machine.lights.led_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_02"].stack[0].priority)
         self.assertLightChannel("light_01", 204)
-        self.assertEqual(200, self.machine.lights.light_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_01"].stack[0].priority)
         self.assertLightChannel("light_02", 120)
-        self.assertEqual(200, self.machine.lights.light_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_02"].stack[0].priority)
         self.assertLightChannel("gi_01", 255)
 
         # Check LEDs, lights, and GI after 3rd step
         self.advance_time_and_run()
         self.assertLightColor("led_01", 'DarkSlateGray')
-        self.assertEqual(200, self.machine.lights.led_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_01"].stack[0].priority)
         self.assertLightColor("led_02", 'Tomato')
-        self.assertEqual(200, self.machine.lights.led_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_02"].stack[0].priority)
         self.assertLightChannel("light_01", 255)
-        self.assertEqual(200, self.machine.lights.light_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_01"].stack[0].priority)
         self.assertLightChannel("light_02", 51)
-        self.assertEqual(200, self.machine.lights.light_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_02"].stack[0].priority)
         self.assertLightChannel("gi_01", 153)
 
         # Check LEDs, lights, and GI after 4th step (includes a fade to next
         #  color)
         self.advance_time_and_run()
         self.assertNotLightColor("led_01", 'MidnightBlue')
-        self.assertEqual(200, self.machine.lights.led_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_01"].stack[0].priority)
         self.assertNotLightColor("led_02", 'DarkOrange')
-        self.assertEqual(200, self.machine.lights.led_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["led_02"].stack[0].priority)
         self.assertLightChannel("light_01", 255)
-        self.assertEqual(200, self.machine.lights.light_01.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_01"].stack[0].priority)
         self.assertLightChannel("light_02", 51)
-        self.assertEqual(200, self.machine.lights.light_02.stack[0]['priority'])
+        self.assertEqual(200, self.machine.lights["light_02"].stack[0].priority)
         self.assertLightChannel("gi_01", 51)
 
         # Advance time so fade should have completed
@@ -220,75 +209,79 @@ class TestShows(MpfTestCase):
         self.assertLightChannel("light_02", 120)
         self.assertLightChannel("gi_01", 255)
 
+        self.assertNotIn("show_from_mode", self.machine.show_player.instances['mode1']['show_player'])
+        self.machine.variables.set_machine_var("test", 42)
+        self.advance_time_and_run(.01)
+        self.assertTrue(self.machine.show_player.instances['mode1']['show_player']['<Template machine.test == 42>'])
+
         # Stop the mode (and therefore the show)
         self.machine.events.post('stop_mode1')
         self.machine_run()
+        self.assertNotIn("<Template machine.test == 42>", self.machine.show_player.instances['mode1']['show_player'])
         self.assertFalse(self.machine.mode_controller.is_active('mode1'))
         self.assertTrue(running_show1._stopped)
-        self.assertFalse([x for x in self.machine.shows['test_show1'].running
-                          if x.name.startswith('test_show1')])
+        self.assertNotIn("test_show1", self.machine.show_player.instances['mode1']['show_player'])
         self.advance_time_and_run(5)
 
         # Make sure the lights and LEDs have reverted back to their prior
         # states from before the show started
 
         self.assertLightColor("led_01", "off")
-        self.assertFalse(self.machine.lights.led_01.stack)
+        self.assertFalse(self.machine.lights["led_01"].stack)
         self.assertLightColor("led_01", "off")
-        self.assertFalse(self.machine.lights.led_02.stack)
+        self.assertFalse(self.machine.lights["led_02"].stack)
         self.assertLightChannel("light_01", 0)
-        self.assertFalse(self.machine.lights.light_01.stack)
+        self.assertFalse(self.machine.lights["light_01"].stack)
         self.assertLightChannel("light_02", 0)
-        self.assertFalse(self.machine.lights.light_02.stack)
+        self.assertFalse(self.machine.lights["light_02"].stack)
         self.assertLightChannel("gi_01", 0)
 
         # --------------------------------------------------------
-        # test_show2 - Show with events and triggers
+        # test_show2 - Show with events
         # --------------------------------------------------------
 
         # Setup callback for test_event event (fired in test show) and triggers
         self.event_handler = MagicMock()
+        self.event_handler_2 = MagicMock()
         self.machine.events.add_handler('test_event', self.event_handler)
-        self.machine.bcp.bcp_trigger = MagicMock()
+        self.machine.events.add_handler('play_sound', self.event_handler_2)
 
         # Advance the clock enough to ensure the shows have time to load
-        self.assertTrue(self.machine.shows['test_show2'].loaded)
         self.assertEqual(self.machine.shows['test_show2'].total_steps, 3)
 
-        # Make sure our event callback and trigger have not been fired yet
+        # Make sure our event callbacks have not been fired yet
         self.assertFalse(self.event_handler.called)
-        self.assertFalse(self.machine.bcp.bcp_trigger.called)
+        self.assertFalse(self.event_handler_2.called)
 
         # Start the mode that will trigger playback of the test_show2 show
         self.machine.events.post('start_mode2')
         self.machine_run()
         self.assertTrue(self.machine.mode_controller.is_active('mode2'))
-        self.assertTrue(self.machine.modes.mode2.active)
-        self.assertIn(self.machine.modes.mode2,
+        self.assertTrue(self.machine.modes["mode2"].active)
+        self.assertIn(self.machine.modes["mode2"],
                       self.machine.mode_controller.active_modes)
-        self.assertTrue(self.machine.shows['test_show2'].running)
+        self.assertTrue(self.machine.show_player.instances['mode2']['show_player']['test_show2'])
         self.machine_run()
 
-        # Make sure event callback and trigger have been called
+        # Make sure event callbacks have been called
         self.assertTrue(self.event_handler.called)
-        self.assertTrue(self.machine.bcp.bcp_trigger)
-        self.machine.bcp.bcp_trigger.assert_called_with('play_sound',
-                                                        sound="test_1",
-                                                        volume=0.5, loops=-1,
-                                                        priority=0)
+        self.assertTrue(self.event_handler_2.called)
+        self.event_handler_2.assert_called_with(priority=0,
+                                                sound="test_1",
+                                                loops=-1,
+                                                volume=0.5)
 
-        # Advance to next show step and check for trigger
+        # Advance to next show step and check for event
         self.advance_time_and_run()
-        self.machine.bcp.bcp_trigger.assert_called_with('play_sound',
-                                                        sound="test_2",
-                                                        priority=0)
+        self.event_handler_2.assert_called_with(priority=0,
+                                                sound="test_2")
 
-        # Advance to next show step and check for trigger
+        # Advance to next show step and check for event
         self.advance_time_and_run()
-        self.machine.bcp.bcp_trigger.assert_called_with('play_sound',
-                                                        sound="test_3",
-                                                        volume=0.35, loops=1,
-                                                        priority=0)
+        self.event_handler_2.assert_called_with(priority=0,
+                                                sound="test_3",
+                                                loops=1,
+                                                volume=0.35)
 
         # Stop the mode (and therefore the show)
         self.machine.events.post('stop_mode2')
@@ -301,24 +294,23 @@ class TestShows(MpfTestCase):
         # --------------------------------------------------------
 
         # Setup callback for test_event event (fired in test show) and triggers
-        self.machine.coils['coil_01'].pulse = MagicMock()
+        self.machine.coils['coil_01'].hw_driver.pulse = MagicMock()
         self.machine.coils['flasher_01'].hw_driver.enable = MagicMock()
 
-        self.assertTrue(self.machine.shows['test_show3'].loaded)
         self.assertEqual(self.machine.shows['test_show3'].total_steps, 3)
 
         # Make sure our device callbacks have not been fired yet
-        self.assertFalse(self.machine.coils['coil_01'].pulse.called)
+        self.assertFalse(self.machine.coils['coil_01'].hw_driver.pulse.called)
         self.assertFalse(self.machine.coils['flasher_01'].hw_driver.enable.called)
 
         # Start the mode that will trigger playback of the test_show3 show
         self.machine.events.post('start_mode3')
         self.machine_run()
         self.assertTrue(self.machine.mode_controller.is_active('mode3'))
-        self.assertTrue(self.machine.modes.mode3.active)
-        self.assertIn(self.machine.modes.mode3,
+        self.assertTrue(self.machine.modes["mode3"].active)
+        self.assertIn(self.machine.modes["mode3"],
                       self.machine.mode_controller.active_modes)
-        self.assertTrue(self.machine.shows['test_show3'].running)
+        self.assertTrue(self.machine.show_player.instances['mode3']['show_player']['test_show3'])
         self.machine_run()
 
         # Make sure flasher device callback has been called (in first step
@@ -328,13 +320,11 @@ class TestShows(MpfTestCase):
 
         # Advance to next show step and check for coil firing
         self.advance_time_and_run()
-        self.machine.coils['coil_01'].pulse.assert_called_with(power=1.0,
-                                                               priority=0)
+        self.machine.coils['coil_01'].hw_driver.pulse.assert_called_with(PulseSettings(power=1.0, duration=30))
 
         # Advance to next show step and check for coil firing
         self.advance_time_and_run()
-        self.machine.coils['coil_01'].pulse.assert_called_with(power=0.45,
-                                                               priority=0)
+        self.machine.coils['coil_01'].hw_driver.pulse.assert_called_with(PulseSettings(power=0.45, duration=30))
 
         # TODO: Test device tags
         # TODO: Add test for multiple shows running at once with different
@@ -370,7 +360,7 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test passing tag instead of LED name
-        self.machine.lights.led_01.clear_stack()
+        self.machine.lights["led_01"].clear_stack()
         self.advance_time_and_run()
 
         show = self.machine.shows['leds_name_token'].play(show_tokens=dict(
@@ -381,7 +371,7 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test passing multiple LEDs as string list
-        self.machine.lights.led_01.clear_stack()
+        self.machine.lights["led_01"].clear_stack()
         self.advance_time_and_run()
 
         show = self.machine.shows['leds_name_token'].play(show_tokens=dict(leds='led_01, led_02'))
@@ -391,8 +381,8 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test passing color as a token
-        self.machine.lights.led_01.clear_stack()
-        self.machine.lights.led_02.clear_stack()
+        self.machine.lights["led_01"].clear_stack()
+        self.machine.lights["led_02"].clear_stack()
         self.advance_time_and_run()
 
         show = self.machine.shows['leds_color_token'].play(
@@ -413,8 +403,8 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test single LED in show with extended LED config
-        self.machine.lights.led_01.clear_stack()
-        self.machine.lights.led_02.clear_stack()
+        self.machine.lights["led_01"].clear_stack()
+        self.machine.lights["led_02"].clear_stack()
         self.advance_time_and_run()
 
         # led should be off
@@ -430,8 +420,8 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test tag in show with extended LED config
-        self.machine.lights.led_01.clear_stack()
-        self.machine.lights.led_02.clear_stack()
+        self.machine.lights["led_01"].clear_stack()
+        self.machine.lights["led_02"].clear_stack()
         self.advance_time_and_run()
 
         show = self.machine.shows['leds_extended'].play(
@@ -453,7 +443,7 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test light tag in show
-        self.machine.lights.light_01.off(force=True)
+        self.machine.lights["light_01"].off(force=True)
         self.advance_time_and_run()
 
         show = self.machine.shows['lights_basic'].play(
@@ -465,11 +455,11 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test lights as string list in show
-        self.machine.lights.light_01.off(force=True)
+        self.machine.lights["light_01"].off(force=True)
         self.advance_time_and_run()
 
         show = self.machine.shows['lights_basic'].play(
-            show_tokens=dict(lights='light_01 light_02'))
+            show_tokens=dict(lights='light_01, light_02'))
         self.advance_time_and_run(.5)
 
         self.assertLightChannel("light_01", 255)
@@ -477,10 +467,10 @@ class TestShows(MpfTestCase):
         show.stop()
 
         # test led and light tags in the same show
-        self.machine.lights.led_01.clear_stack()
-        self.machine.lights.led_02.clear_stack()
-        self.machine.lights.light_01.off(force=True)
-        self.machine.lights.light_02.off(force=True)
+        self.machine.lights["led_01"].clear_stack()
+        self.machine.lights["led_02"].clear_stack()
+        self.machine.lights["light_01"].off(force=True)
+        self.machine.lights["light_02"].off(force=True)
         self.advance_time_and_run()
 
         show = self.machine.shows['multiple_tokens'].play(
@@ -520,59 +510,51 @@ class TestShows(MpfTestCase):
         self.assertEqual(copied_show[1]['duration'], 1.0)
         self.assertEqual(copied_show[2]['duration'], 1.0)
         self.assertEqual(copied_show[4]['duration'], 2.0)
-        self.assertIn(self.machine.lights.led_01, copied_show[0]['lights'])
-        self.assertIn(self.machine.lights.led_02, copied_show[0]['lights'])
-        self.assertEqual(copied_show[0]['lights'][self.machine.lights.led_01],
-                         dict(color='006400', fade_ms=None, priority=0))
-        self.assertEqual(copied_show[0]['lights'][self.machine.lights.led_02],
-                         dict(color='cccccc', fade_ms=None, priority=0))
-        self.assertEqual(copied_show[3]['lights'][self.machine.lights.led_01],
-                         dict(color='midnightblue', fade_ms=500, priority=0))
-
-    def _stop_shows(self):
-        while self.machine.show_controller.running_shows:
-            for show in self.machine.show_controller.running_shows:
-                show.stop()
-                self.advance_time_and_run()
-        self.assertFalse(self.machine.show_controller.running_shows)
+        self.assertIn(self.machine.lights["led_01"], copied_show[0]['lights'])
+        self.assertIn(self.machine.lights["led_02"], copied_show[0]['lights'])
+        self.assertEqual(copied_show[0]['lights'][self.machine.lights["led_01"]],
+                         dict(color='006400', fade=None, priority=0))
+        self.assertEqual(copied_show[0]['lights'][self.machine.lights["led_02"]],
+                         dict(color='cccccc', fade=None, priority=0))
+        self.assertEqual(copied_show[3]['lights'][self.machine.lights["led_01"]],
+                         dict(color='midnightblue', fade=500, priority=0))
 
     def test_show_player(self):
         # Basic show
         self.machine.events.post('play_test_show1')
         self.advance_time_and_run()
-        self.assertEqual(1, len(self.machine.show_controller.get_running_shows(
-                         'test_show1')))
-        self._stop_shows()
+        self.assertEqual(1, len(self.machine.show_player.instances['_global']['show_player']))
+        self.post_event("stop_test_show1")
 
         # Test priority
         self.machine.events.post('play_with_priority')
         self.advance_time_and_run()
-        self.assertEqual(15, self.machine.show_controller.running_shows[0].priority)
-        self._stop_shows()
+        self.assertEqual(15, self.machine.show_player.instances['_global']['show_player']['test_show1'].show_config.priority)
+        self.post_event("stop_test_show1")
 
         # Test speed
         self.machine.events.post('play_with_speed')
         self.advance_time_and_run()
-        self.assertEqual(2, self.machine.show_controller.running_shows[0].speed)
-        self._stop_shows()
+        self.assertEqual(2, self.machine.show_player.instances['_global']['show_player']['test_show1'].show_config.speed)
+        self.post_event("stop_test_show1")
 
         # Test start step
         self.machine.events.post('play_with_start_step')
         self.advance_time_and_run(.1)
-        self.assertEqual(2, self.machine.show_controller.running_shows[0].next_step_index)
-        self._stop_shows()
+        self.assertEqual(2, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
+        self.post_event("stop_test_show1")
 
         # Test start step
         self.machine.events.post('play_with_neg_start_step')
         self.advance_time_and_run(.1)
-        self.assertEqual(4, self.machine.show_controller.running_shows[0].next_step_index)
-        self._stop_shows()
+        self.assertEqual(4, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
+        self.post_event("stop_test_show1")
 
         # Test loops
         self.machine.events.post('play_with_loops')
         self.advance_time_and_run(.1)
-        self.assertEqual(2, self.machine.show_controller.running_shows[0].loops)
-        self._stop_shows()
+        self.assertEqual(2, self.machine.show_player.instances['_global']['show_player']['test_show1'].loops)
+        self.post_event("stop_test_show1")
 
         # Test sync_ms 1000ms
         self.machine.events.post('play_with_sync_ms_1000')
@@ -580,46 +562,100 @@ class TestShows(MpfTestCase):
 
         # should be 0 +/- the duration of a frame
 
-        self.assertAlmostEqual(0.0, self.machine.show_controller.running_shows[0].next_step_time % 1.0, delta=(1 / 30))
-        self._stop_shows()
+        self.assertAlmostEqual(0.0, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_time % 1.0, delta=(1 / 30))
+        self.post_event("stop_test_show1")
 
         # Test sync_ms 500ms
         self.machine.events.post('play_with_sync_ms_500')
         self.advance_time_and_run(.1)
-        self.assertAlmostEqual(0.0, self.machine.show_controller.running_shows[0].next_step_time % 0.5, delta=(1 / 30))
-        self._stop_shows()
+        self.assertAlmostEqual(0.0, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_time % 0.5, delta=(1 / 30))
+        self.post_event("stop_test_show1")
 
         # Test manual advance
         self.machine.events.post('play_with_manual_advance')
         self.advance_time_and_run(10)
-        self.assertEqual(1, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(1, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
+
+    def advance_to_sync_ms(self, ms):
+        current_time = self.clock.get_time()
+        ms = float(ms)
+        next_full_second = current_time + ((ms - (current_time * 1000) % ms) / 1000.0)
+        self.advance_time_and_run(next_full_second - current_time)
+        delta = (self.clock.get_time() * 1000) % ms
+        self.assertTrue(delta == ms or delta < 1, "Delta {} too large".format(delta))
+
+    @test_config("test_sync_ms.yaml")
+    def test_sync_ms(self):
+        self.advance_to_sync_ms(250)
+        # shortly after sync point. start initial show
+        self.advance_time_and_run(.01)
+        self.post_event("play_show_sync_ms1")
+        self.assertLightColor("light", "off")
+        # wait for first sync point
+        self.advance_to_sync_ms(250)
+        self.advance_time_and_run(.01)
+        self.assertLightColor("light", "red")
+        # shortly after sync point again
+        self.post_event("play_show_sync_ms2")
+        # old show still playing
+        self.advance_time_and_run(.1)
+        self.assertLightColor("light", "red")
+        # until next sync point is reached
+        self.advance_time_and_run(.15)
+        self.assertLightColor("light", "blue")
+        self.post_event("stop_show")
+        self.assertLightColor("light", "off")
+
+        # play show and start second show before first was synced
+        self.advance_to_sync_ms(250)
+        self.advance_time_and_run(.01)
+        self.post_event("play_show_sync_ms1")
+        self.advance_time_and_run(.01)
+        self.post_event("play_show_sync_ms2")
+        self.assertLightColor("light", "off")
+        self.advance_to_sync_ms(250)
+        self.assertLightColor("light", "blue")
+        self.post_event("stop_show")
+        self.assertLightColor("light", "off")
+
+        # play show and start second show before first was synced. stop before second is synced
+        self.advance_to_sync_ms(250)
+        self.advance_time_and_run(.01)
+        self.post_event("play_show_sync_ms1")
+        self.advance_time_and_run(.01)
+        self.post_event("play_show_sync_ms2")
+        self.assertLightColor("light", "off")
+        self.post_event("stop_show")
+        self.assertLightColor("light", "off")
+        self.advance_time_and_run(.5)
+        self.assertLightColor("light", "off")
 
     def test_pause_resume_shows(self):
         self.machine.events.post('play_test_show1')
         # make sure show is advancing
         self.advance_time_and_run(1)
-        self.assertEqual(2, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(2, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
         self.advance_time_and_run(1)
-        self.assertEqual(3, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(3, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
 
         self.machine.events.post('pause_test_show1')
 
         # make sure show stops advancing
         self.advance_time_and_run(1)
-        self.assertEqual(3, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(3, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
         self.advance_time_and_run(1)
-        self.assertEqual(3, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(3, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
         self.advance_time_and_run(1)
-        self.assertEqual(3, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(3, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
 
         # make sure show starts advanving again
         self.machine.events.post('resume_test_show1')
         self.advance_time_and_run(0.1)
-        self.assertEqual(4, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(4, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
         self.advance_time_and_run(1)
-        self.assertEqual(5, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(5, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
         self.advance_time_and_run(2)
-        self.assertEqual(1, self.machine.show_controller.running_shows[0].next_step_index)
+        self.assertEqual(1, self.machine.show_player.instances['_global']['show_player']['test_show1'].next_step_index)
 
     def test_show_from_mode_config(self):
         self.assertIn('show_from_mode', self.machine.shows)
@@ -658,30 +694,11 @@ class TestShows(MpfTestCase):
 
     def test_nested_shows(self):
         self.mock_event("test")
-        self.assertFalse(self.machine.shows['mychildshow'].loaded)
         show = self.machine.shows['myparentshow'].play(loops=0)
-
-        self.advance_time_and_run(5)
-        while not self.machine.shows['mychildshow'].loaded:
-            self.advance_time_and_run(1)
 
         self.advance_time_and_run(1)
         self.assertEqual(1, self._events['test'])
-        self.assertTrue(self.machine.shows['mychildshow'].loaded)
         show.stop()
-
-    def test_nested_shows_stop_before_load(self):
-        self.mock_event("test")
-        self.assertFalse(self.machine.shows['mychildshow'].loaded)
-        show = self.machine.shows['myparentshow'].play(loops=0)
-        show.stop()
-        self.assertEqual(0, self._events['test'])
-
-        self.advance_time_and_run(5)
-        while not self.machine.shows['mychildshow'].loaded:
-            self.advance_time_and_run(1)
-        self.assertEqual(0, self._events['test'])
-        self.assertTrue(self.machine.shows['mychildshow'].loaded)
 
     def test_manual_advance(self):
         self.assertLightColor("led_01", [0, 0, 0])
@@ -809,3 +826,99 @@ class TestShows(MpfTestCase):
         self.advance_time_and_run(6)
         self.assertEventCalled('test_show1_completed')
         self.assertEventCalled('test_show1_stopped')
+
+    def test_token_in_keys(self):
+        self.post_event("play_show_with_token_in_key")
+        self.advance_time_and_run()
+        self.assertLightColor("led_01", "red")
+
+    def test_placeholder_in_token(self):
+        self.assertNotLightColor("led_02", "blue")
+        self.machine.variables.set_machine_var("test_color", "blue")
+        self.machine.variables.set_machine_var("test_num", "02")
+        self.post_event("play_show_with_placeholder_in_token")
+        self.advance_time_and_run()
+        self.assertLightColor("led_02", "blue")
+
+    def test_placeholder_in_token_and_events(self):
+        self.assertNotLightColor("led_02", "red")
+        self.post_event_with_params("play_show_with_placeholder_in_token_and_event_args", test_color="red",
+                                    test_num="02")
+        self.advance_time_and_run()
+        self.assertLightColor("led_02", "red")
+
+    def test_non_string_token(self):
+        self.start_mode("mode4")
+        self.assertLightColor("led_01", "black")
+        self.post_event("test_token")
+        self.advance_time_and_run(.05)
+        self.assertNotLightColor("led_01", "red")
+        self.advance_time_and_run(.06)
+        self.assertLightColor("led_01", "red")
+
+    def test_conditional_shows(self):
+        self.assertLightColor("led_01", "black")
+        self.post_event_with_params("play_show_with_condition_in_event", green=False)
+        self.advance_time_and_run()
+        self.assertLightColor("led_01", "purple")
+        self.post_event_with_params("play_show_with_condition_in_event", green=True)
+        self.advance_time_and_run()
+        self.assertLightColor("led_01", "green")
+
+    def test_conditional_show_names(self):
+        self.assertLightColor("led_01", "black")
+        self.post_event_with_params("play_show_with_condition_in_show", blue=False)
+        self.advance_time_and_run()
+        self.assertLightColor("led_01", "red")
+        self.post_event_with_params("play_show_with_condition_in_show", blue=True)
+        self.advance_time_and_run()
+        self.assertLightColor("led_01", "blue")
+
+    # Regression test for bug in standalone variable shows
+    def test_variable_show(self):
+        variable_show = self.machine.shows['test_variable_show'].play()
+        self.advance_time_and_run(.1)
+        # check that machine variable was set
+        self.assertEqual(self.machine.variables.get_machine_var('foo'), 0)
+        # advance to next show step
+        self.advance_time_and_run()
+        # check that machine variable was incremented
+        self.assertEqual(self.machine.variables.get_machine_var('foo'), 1)
+
+    @test_config("test_show_player_queue.yaml")
+    def test_show_player_queue(self):
+        for show_num in range(1, 4):
+            for step_num in range(1, 4):
+                self.mock_event("step{}_{}".format(show_num, step_num))
+
+        self.post_event("play_show1_on_queue1")
+        self.post_event("play_show2_on_queue1")
+
+        self.advance_time_and_run(.5)
+        self.assertEventCalled("step1_1")
+        self.assertEventNotCalled("step1_2")
+        self.assertEventNotCalled("step2_1")
+        self.advance_time_and_run()
+        self.assertEventCalled("step1_2")
+        self.assertEventNotCalled("step1_3")
+        self.assertEventNotCalled("step2_1")
+        self.advance_time_and_run()
+        self.assertEventCalled("step1_3")
+        self.assertEventNotCalled("step2_1")
+        self.advance_time_and_run()
+        self.assertEventCalled("step2_1")
+        self.assertEventNotCalled("step2_2")
+
+        self.mock_event("step1_1")
+        self.mock_event("step1_2")
+        self.mock_event("step1_3")
+        self.post_event("play_show1_on_queue2")
+        self.advance_time_and_run(.1)
+        self.assertEventCalled("step1_1")
+        self.assertEventNotCalled("step1_2")
+
+        self.advance_time_and_run()
+        self.assertEventCalled("step2_2")
+        self.assertEventNotCalled("step2_3")
+        self.assertEventCalled("step1_2")
+        self.assertEventNotCalled("step1_3")

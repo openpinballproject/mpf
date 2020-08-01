@@ -1,4 +1,6 @@
 """Controls a playfield magnet in a pinball machine."""
+from mpf.core.enable_disable_mixin import EnableDisableMixinSystemWideDevice
+
 from mpf.core.events import event_handler
 
 from mpf.core.delays import DelayManager
@@ -7,11 +9,12 @@ from mpf.core.device_monitor import DeviceMonitor
 from mpf.core.system_wide_device import SystemWideDevice
 
 
-@DeviceMonitor(_enabled="enabled", _active="active",
-               _release_in_progress="release_in_progress")
-class Magnet(SystemWideDevice):
+@DeviceMonitor(_active="active", _release_in_progress="release_in_progress")
+class Magnet(EnableDisableMixinSystemWideDevice, SystemWideDevice):
 
     """Controls a playfield magnet in a pinball machine."""
+
+    __slots__ = ["delay", "_active", "_release_in_progress"]
 
     config_section = 'magnets'
     collection = 'magnets'
@@ -20,53 +23,48 @@ class Magnet(SystemWideDevice):
     def __init__(self, machine, name):
         """Initialise magnet."""
         super().__init__(machine, name)
-        self.delay = DelayManager(machine.delayRegistry)
-        self._enabled = False
+        self.delay = DelayManager(machine)
         self._active = False
         self._release_in_progress = False
 
-    @event_handler(10)
-    def enable(self, **kwargs):
+    def _enable(self):
         """Enable magnet."""
-        del kwargs
-        if self._enabled:
-            return
-
         self.debug_log("Enabling Magnet")
-        self._enabled = True
 
         if self.config['grab_switch']:
             self.config['grab_switch'].add_handler(self.grab_ball)
 
-    @event_handler(0)
-    def disable(self, **kwargs):
+    def _disable(self):
         """Disable magnet."""
-        del kwargs
-        if not self._enabled:
-            return
-
         self.debug_log("Disabling Magnet")
-        self._enabled = False
 
         if self.config['grab_switch']:
             self.config['grab_switch'].remove_handler(self.grab_ball)
 
     @event_handler(1)
-    def reset(self, **kwargs):
-        """Release ball and disable magnet."""
+    def event_reset(self, **kwargs):
+        """Event handler for reset event."""
         del kwargs
+        self.reset()
+
+    def reset(self):
+        """Release ball and disable magnet."""
         self.debug_log("Resetting Magnet")
         self.release_ball()
         self.disable()
 
     @event_handler(9)
-    def grab_ball(self, **kwargs):
-        """Grab a ball."""
+    def event_grab_ball(self, **kwargs):
+        """Event handler for grab_ball event."""
         del kwargs
+        self.grab_ball()
+
+    def grab_ball(self):
+        """Grab a ball."""
         # mark the playfield active no matter what
         self.config['playfield'].mark_playfield_active_from_device_action()
         # check if magnet is enabled or already active
-        if not self._enabled or self._active or self._release_in_progress:
+        if not self.enabled or self._active or self._release_in_progress:
             return
         self.debug_log("Grabbing a ball.")
         self._active = True
@@ -91,9 +89,13 @@ class Magnet(SystemWideDevice):
         '''
 
     @event_handler(8)
-    def release_ball(self, **kwargs):
-        """Release the grabbed ball."""
+    def event_release_ball(self, **kwargs):
+        """Event handler for release_ball event."""
         del kwargs
+        self.release_ball()
+
+    def release_ball(self):
+        """Release the grabbed ball."""
         if not self._active or self._release_in_progress:
             return
 
@@ -118,9 +120,13 @@ class Magnet(SystemWideDevice):
         '''
 
     @event_handler(7)
-    def fling_ball(self, **kwargs):
-        """Fling the grabbed ball."""
+    def event_fling_ball(self, **kwargs):
+        """Event handler for fling_ball event."""
         del kwargs
+        self.fling_ball()
+
+    def fling_ball(self):
+        """Fling the grabbed ball."""
         if not self._active or self._release_in_progress:
             return
 

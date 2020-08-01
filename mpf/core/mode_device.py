@@ -2,6 +2,7 @@
 import abc
 
 from mpf.core.device import Device
+from mpf.core.events import event_handler
 from mpf.core.machine import MachineController
 from mpf.core.mode import Mode
 from mpf.core.player import Player
@@ -11,28 +12,33 @@ class ModeDevice(Device, metaclass=abc.ABCMeta):
 
     """A device in a mode."""
 
+    __slots__ = ["mode"]
+
     def __init__(self, machine: MachineController, name: str) -> None:
         """Initialise mode device."""
         super().__init__(machine, name)
-        self.loaded_in_mode = None      # type: Mode
+        self.mode = None    # type: Mode
 
-    def device_added_to_mode(self, mode: Mode) -> None:
-        """Called when a device is created by a mode.
+    async def device_added_to_mode(self, mode: Mode) -> None:
+        """Add device to a running mode.
 
         Args:
             mode: Mode which loaded the device
         """
         del mode
-        self._initialize()
+        await self._initialize()
 
     def device_loaded_in_mode(self, mode: Mode, player: Player) -> None:
-        """Called when a mode is loaded which contains this device.
+        """Load device in running mode.
+
+        The mode just started.
 
         Args:
             mode: Mode which loaded the device
             player: Current active player
         """
-        pass
+        del player
+        self.mode = mode
 
     @property
     def can_exist_outside_of_game(self) -> bool:
@@ -45,23 +51,27 @@ class ModeDevice(Device, metaclass=abc.ABCMeta):
         del config
         raise AssertionError("Device {} cannot be overloaded.".format(self))
 
-    def enable(self, **kwarg) -> None:
+    @event_handler(20)
+    def event_enable(self, **kwargs):
+        """Event handler for enable event."""
+        del kwargs
+        self.enable()
+
+    def enable(self) -> None:
         """Enable handler."""
-        pass
 
     def add_control_events_in_mode(self, mode: Mode) -> None:
-        """Called on mode start if this device has any mode control events.
+        """Add control events in mode if this device has any mode control events.
 
         Args:
             mode: Mode which loaded the device
         """
         if "enable_events" in self.config and not self.config['enable_events']:
             mode.add_mode_event_handler("mode_{}_started".format(mode.name),
-                                        self.enable, priority=100)
+                                        self.event_enable, priority=100)
 
     def remove_control_events_in_mode(self) -> None:
         """Remove control events."""
-        pass
 
     def device_removed_from_mode(self, mode: Mode) -> None:
         """Remove device because mode is unloading.
@@ -72,5 +82,4 @@ class ModeDevice(Device, metaclass=abc.ABCMeta):
             mode: Mode which stopped
         """
         del mode
-        raise NotImplementedError(
-            '{} does not have a device_removed_from_mode() method'.format(self))
+        self.mode = None

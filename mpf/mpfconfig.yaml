@@ -1,4 +1,4 @@
-# config_version=5
+#config_version=5
 # This file contains configuration options for the MPF itself, including
 # default settings for your machine-wide game-specific config files.
 
@@ -10,11 +10,9 @@ mpf:
         - events: mpf.core.events.EventManager
         - text_ui: mpf.core.text_ui.TextUi
         - mode_controller: mpf.core.mode_controller.ModeController
-        - shot_profile_manager: mpf.core.shot_profile_manager.ShotProfileManager
         - device_manager: mpf.core.device_manager.DeviceManager
         - switch_controller: mpf.core.switch_controller.SwitchController
         - ball_controller: mpf.core.ball_controller.BallController
-        - asset_manager: mpf.core.assets.AsyncioSyncAssetManager
         - show_controller: mpf.core.show_controller.ShowController
         - bcp: mpf.core.bcp.bcp.Bcp
         - service: mpf.core.service_controller.ServiceController
@@ -26,19 +24,21 @@ mpf:
     config_players:
         coil: mpf.config_players.coil_player.CoilPlayer
         event: mpf.config_players.event_player.EventPlayer
+        blocking: mpf.config_players.block_event_player.BlockEventPlayer
         queue_event: mpf.config_players.queue_event_player.QueueEventPlayer
         queue_relay: mpf.config_players.queue_relay_player.QueueRelayPlayer
         flasher: mpf.config_players.flasher_player.FlasherPlayer
         light: mpf.config_players.light_player.LightPlayer
         random_event: mpf.config_players.random_event_player.RandomEventPlayer
         show: mpf.config_players.show_player.ShowPlayer
-        trigger: mpf.config_players.trigger_player.TriggerPlayer
-        score: mpf.config_players.score_player.ScorePlayer
+        variable: mpf.config_players.variable_player.VariablePlayer
         segment_display_player: mpf.config_players.segment_display_player.SegmentDisplayPlayer
         hardware_sound_player: mpf.config_players.hardware_sound_player.HardwareSoundPlayer
+        score_queue_player: mpf.config_players.score_queue_player.ScoreQueuePlayer
 
     device_modules:
         - mpf.devices.driver.Driver
+        - mpf.devices.digital_output.DigitalOutput
         - mpf.devices.dual_wound_coil.DualWoundCoil
         - mpf.devices.switch.Switch
         - mpf.devices.light.Light
@@ -49,6 +49,7 @@ mpf:
         - mpf.devices.drop_target.DropTargetBank
         - mpf.devices.extra_ball.ExtraBall
         - mpf.devices.extra_ball_group.ExtraBallGroup
+        - mpf.devices.shot_profile.ShotProfile
         - mpf.devices.shot.Shot
         - mpf.devices.shot_group.ShotGroup
         - mpf.devices.flipper.Flipper
@@ -56,7 +57,6 @@ mpf:
         - mpf.devices.score_reel.ScoreReel
         - mpf.devices.score_reel_group.ScoreReelGroup
         - mpf.devices.playfield_transfer.PlayfieldTransfer
-        - mpf.devices.ball_lock.BallLock
         - mpf.devices.multiball.Multiball
         - mpf.devices.motor.Motor
         - mpf.devices.ball_save.BallSave
@@ -83,11 +83,15 @@ mpf:
         - mpf.devices.sequence_shot.SequenceShot
         - mpf.devices.hardware_sound_system.HardwareSoundSystem
         - mpf.devices.stepper.Stepper
+        - mpf.devices.state_machine.StateMachine
+        - mpf.devices.score_queue.ScoreQueue
+        - mpf.devices.ball_routing.BallRouting
+        - mpf.devices.show_queue.ShowQueue
 
     plugins:
-        mpf.plugins.auditor.Auditor
-        mpf.plugins.info_lights.InfoLights
-        mpf.plugins.switch_player.SwitchPlayer
+        - mpf.plugins.auditor.Auditor
+        - mpf.plugins.info_lights.InfoLights
+        - mpf.plugins.switch_player.SwitchPlayer
 
     platforms:
         fadecandy: mpf.platforms.fadecandy.FadecandyHardwarePlatform
@@ -104,9 +108,21 @@ mpf:
         smart_virtual: mpf.platforms.smart_virtual.SmartVirtualHardwarePlatform
         smartmatrix: mpf.platforms.smartmatrix.SmartMatrixHardwarePlatform
         snux: mpf.platforms.snux.SnuxHardwarePlatform
+        system11: mpf.platforms.system11.System11OverlayPlatform
         virtual: mpf.platforms.virtual.VirtualHardwarePlatform
         spike: mpf.platforms.spike.spike.SpikePlatform
         trinamics_steprocker: mpf.platforms.trinamics_steprocker.TrinamicsStepRocker
+        pololu_tic: mpf.platforms.pololu.pololu_tic.PololuTICHardwarePlatform
+        smbus2: mpf.platforms.smbus2.Smbus2
+        mma8451: mpf.platforms.mma8451.MMA8451Platform
+        virtual_pinball: mpf.platforms.virtual_pinball.virtual_pinball.VirtualPinballPlatform
+        drivers: mpf.platforms.driver_light_platform.DriverLightPlatform
+        step_stick: mpf.platforms.step_stick.StepStickDigitalOutputPlatform
+        osc: mpf.platforms.osc.OscPlatform
+        rpi_dmd: mpf.platforms.rpi_dmd.RpiDmdPlatform
+        spi_bit_bang: mpf.platforms.spi_bit_bang.SpiBitBangPlatform
+        light_segment_displays: mpf.platforms.light_segment_displays.LightSegmentDisplaysPlatform
+        pin2dmd: mpf.platforms.pin2dmd.Pin2DmdHardwarePlatform
 
     paths:
         scriptlets: scriptlets
@@ -116,39 +132,9 @@ mpf:
         high_scores: data/high_scores.yaml
         earnings: data/earnings.yaml
         machine_files: examples
-        config: config
         modes: modes
 
-    default_pulse_ms: 10
-    default_flash_ms: 50
-    auto_create_switch_events: True
-    switch_event_active: "%_active"
-    switch_event_inactive: "%_inactive"
-    switch_tag_event: sw_%
     allow_invalid_config_sections: false
-    save_machine_vars_to_disk: true
-    default_light_hw_update_hz: 50
-    default_platform_hz: 1000
-    default_ball_search: False
-    default_show_sync_ms: 0
-
-    device_collection_control_events:
-        autofires:
-            - enable
-            - disable
-        ball_devices:
-            - stop
-            - eject_all
-        coils:
-            - disable
-        flippers:
-            - enable
-            - disable
-        lights:
-            - "off"
-        gi:
-            - enable
-            - disable
 
 # Default settings for machines. All can be overridden
 
@@ -179,7 +165,6 @@ logging:
       players: basic  # todo
       plugins: none  # todo
       score_reel_controller: none
-      scriptlets: none  # todo
       service_controller: basic
       settings_controller: none
       show_controller: none
@@ -213,7 +198,6 @@ logging:
       players: full
       plugins: basic
       score_reel_controller: basic
-      scriptlets: basic
       service_controller: basic
       settings_controller: basic
       show_controller: basic
@@ -230,8 +214,8 @@ fast:
     ports: com3, com4, com5
     baud: 921600
     watchdog: 1s
-    default_normal_debounce_close: 10ms
-    default_normal_debounce_open: 10ms
+    default_normal_debounce_close: 4ms
+    default_normal_debounce_open: 4ms
     default_quick_debounce_close: 2ms
     default_quick_debounce_open: 2ms
     net_buffer: 10
@@ -240,8 +224,15 @@ fast:
 
 spike:
     wait_times:
-      65: 12
-      128: 5
+      20: 100   # setnumledsinputs (init only)
+      65: 25    # rules (runtime)
+      68: 100   # set ove current (init only)
+      70: 100   # set coil mask (init only)
+      72: 100   # set overcurrent time (init only)
+      112: 10   # configure input (init only)
+      114: 100  # set led mask (init only)
+      240: 100  # settraffic (init only)
+      241: 100  # reset bus (init only)
 
 fadecandy:
     gamma: 2.5
@@ -321,22 +312,11 @@ bcp:
             port: 5051
             type: mpf.core.bcp.bcp_socket_client.BCPClientSocket
 
-    player_variables:
-      __all__
-
-    machine_variables:
-      __all__
-
-    shots:
-      __all__
-
     debug: false
 
 open_pixel_control:
     host: localhost
     port: 7890
-    connection_required: no
-    connection_attempts: -1
 
 shot_profiles:
     default:
@@ -399,6 +379,29 @@ shows:
           lights:
             (led): (color)
             (leds): (color)
+            (light): (color)
+            (lights): (color)
+    flash_color:
+        - duration: 1
+          lights:
+            (light):
+              color: (color)
+            (lights):
+              color: (color)
+            (led):
+              color: (color)
+            (leds):
+              color: (color)
+        - duration: 1
+          lights:
+            (light):
+              color: off
+            (lights):
+              color: off
+            (led):
+              color: off
+            (leds):
+              color: off
 
 settings:
   flipper_power:
@@ -421,7 +424,6 @@ hardware:
   switches: default
   lights: default
   dmd: default
-  driverboards: virtual
   accelerometers: default
   servo_controllers: default
   i2c: default

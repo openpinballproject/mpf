@@ -2,18 +2,17 @@
 import copy
 import os
 import random
+import time
+
 import threading
 from collections import deque, namedtuple
 from pathlib import PurePath
-
-import asyncio
 
 from typing import Iterable, Optional, Set, Callable, Tuple
 from typing import List
 
 from mpf.core.mode import Mode
 
-from mpf.core.case_insensitive_dict import CaseInsensitiveDict
 from mpf.core.machine import MachineController
 from mpf.core.mpf_controller import MpfController
 from mpf.core.utility_functions import Util
@@ -31,6 +30,9 @@ class BaseAssetManager(MpfController, LogMixin):
     module_name = 'AssetManager'
     config_name = 'asset_manager'
 
+    __slots__ = ["_asset_classes", "num_assets_to_load", "num_assets_loaded", "num_bcp_assets_to_load",
+                 "num_bcp_assets_loaded", "_next_id", "_last_asset_event_time", "initial_assets_loaded", "_start_time"]
+
     def __init__(self, machine: MachineController) -> None:
         """Initialise asset manager.
 
@@ -44,6 +46,9 @@ class BaseAssetManager(MpfController, LogMixin):
         self._asset_classes = list()        # type: List[AssetClass]
         # List of dicts, with each dict being an asset class. See
         # register_asset_class() method for details.
+
+        self.initial_assets_loaded = False  # type: bool
+        # True if the initial asset loaded is done
 
         self.num_assets_to_load = 0
         # Total number of assets that are/will be loaded. Used for
@@ -74,6 +79,11 @@ class BaseAssetManager(MpfController, LogMixin):
         # Picks up asset load information from connected BCP client(s)
         self.machine.events.add_handler('assets_to_load',
                                         self._bcp_client_asset_load)
+
+        # prevent excessive loading_assets events
+        self._last_asset_event_time = None
+
+        self._start_time = time.time()
 
     def get_next_id(self) -> int:
         """Return the next free id."""
@@ -137,7 +147,7 @@ class BaseAssetManager(MpfController, LogMixin):
         if not hasattr(self.machine, attribute):
             # some assets of different classes use the same mc attribute, like
             # images and animated_images
-            setattr(self.machine, attribute, CaseInsensitiveDict())
+            setattr(self.machine, attribute, dict())
 
         ac = AssetClass(attribute=attribute,
                         cls=asset_class,
@@ -147,7 +157,7 @@ class BaseAssetManager(MpfController, LogMixin):
                         extensions=extensions,
                         priority=priority,
                         pool_config_section=pool_config_section,
-                        defaults=self._get_asset_class_defaults(disk_asset_section, self.machine.machine_config))
+                        defaults=self._get_asset_class_defaults(disk_asset_section, self.machine.config))
 
         self._asset_classes.append(ac)
         self._asset_classes.sort(key=lambda x: x.priority, reverse=True)
@@ -182,10 +192,7 @@ class BaseAssetManager(MpfController, LogMixin):
         return default_config_dict
 
     def _create_assets(self, **kwargs) -> None:
-        if 'force_assets_load' in kwargs:
-            force_assets_load = kwargs['force_assets_load']
-        else:
-            force_assets_load = False
+        force_assets_load = kwargs.get('force_assets_load', False)
 
         # Called once on boot to create all the asset objects
         # Create the machine-wide assets
@@ -214,7 +221,7 @@ class BaseAssetManager(MpfController, LogMixin):
         if not wait_for_assets:
             self.machine.clear_boot_hold('assets')
 
-    def _create_assets_from_disk(self, config: dict, mode: Optional[Mode]=None) -> dict:
+    def _create_assets_from_disk(self, config: dict, mode: Optional[Mode] = None) -> dict:
         """Walk a folder (and subfolders) and finds all the assets.
 
         Check to see if those assets have config entries in the passed config file, and
@@ -222,13 +229,13 @@ class BaseAssetManager(MpfController, LogMixin):
         defaults based on the subfolder it was in or the general defaults.
         Then it creates the asset objects based on the built-up config.
 
-            Args:
-                config: A config dictionary.
-                mode: Optional reference to the mode object which is used when
-                    assets are being created from mode folders.
+        Args:
+            config: A config dictionary.
+            mode: Optional reference to the mode object which is used when
+                  assets are being created from mode folders.
 
-            Returns: An updated config dictionary. (See the "How it works"
-                section below for details.
+        Returns an updated config dictionary. (See the "How it works" section
+        below for details.)
 
         Note that this method merely creates the asset object so they can be
         referenced in MPF. It does not actually load the asset files into
@@ -283,22 +290,23 @@ class BaseAssetManager(MpfController, LogMixin):
 
         try:
             mode_name = mode.name
-            path = mode.path
+            paths = mode.asset_paths
         except AttributeError:
             mode_name = None
-            path = self.machine.machine_path
+            paths = [self.machine.machine_path]
 
         for ac in self._asset_classes:
             if ac.disk_asset_section not in config:
                 config[ac.disk_asset_section] = dict()
 
-            # Populate the config section for this asset class with all the
-            # assets found on disk
-            config[ac.disk_asset_section] = self._create_asset_config_entries(
-                asset_class=ac,
-                config=config[ac.disk_asset_section],
-                mode_name=mode_name,
-                path=path)
+            for path in paths:
+                # Populate the config section for this asset class with all the
+                # assets found on disk
+                config[ac.disk_asset_section].update(self._create_asset_config_entries(
+                    asset_class=ac,
+                    config=config[ac.disk_asset_section],
+                    mode_name=mode_name,
+                    path=path))
 
             # create the actual instance of the Asset object and add it
             # to the self.machine asset attribute dict for that asset class
@@ -317,8 +325,8 @@ class BaseAssetManager(MpfController, LogMixin):
         return config
 
     # pylint: disable-msg=too-many-locals
-    def _create_asset_config_entries(self, asset_class: AssetClass, config, mode_name: Optional[str]=None,
-                                     path: Optional[str]=None) -> dict:
+    def _create_asset_config_entries(self, asset_class: AssetClass, config, mode_name: Optional[str] = None,
+                                     path: Optional[str] = None) -> dict:
         """Scan a folder (and subfolders).
 
         Automatically creates or updates entries in the config dict for any asset files it finds.
@@ -331,6 +339,7 @@ class BaseAssetManager(MpfController, LogMixin):
                 is not needed for all assets, as any asset file found not in
                 the config dictionary will be set up with the folder it was
                 found in's asset_defaults settings.)
+            mode_name: Name of the mode this asset is used loaded by.
             path: A full core path to the root folder that will be searched
                 for assets. This should *not* include the asset-specific path
                 string. If None, machine's root folder will be searched.
@@ -341,9 +350,7 @@ class BaseAssetManager(MpfController, LogMixin):
         Note that for each file found, this method will scan through the
         entire config dict to see if any entry exists for that file based on an
         entry's 'file:' setting. If it's not found, an entry is created based
-        on the file name. (This auto-created entry uses the lower-case stem of
-        the file, e.g. a file called Image1.png will result in an asset entry
-        called 'image1'.)
+        on the file name.
 
         Examples (based on images):
 
@@ -381,12 +388,12 @@ class BaseAssetManager(MpfController, LogMixin):
         ignore_files = ("desktop.ini", "Thumbs.db")
 
         # walk files in the asset root directory (include all subfolders)
-        for path, _, files in os.walk(root_path, followlinks=True):
+        for this_path, _, files in os.walk(root_path, followlinks=True):
             # Determine the first-level sub-folder of the current path relative to the
             # asset root path.  The first level sub-folder is used to determine the
             # default asset keys based on the assets config section.
-            relative_path = PurePath(path).relative_to(root_path)
-            if len(relative_path.parts) > 0:
+            relative_path = PurePath(this_path).relative_to(root_path)
+            if relative_path.parts:
                 first_level_subfolder = relative_path.parts[0]
             else:
                 first_level_subfolder = None
@@ -396,8 +403,8 @@ class BaseAssetManager(MpfController, LogMixin):
 
             # loop over valid files in the current path
             for file_name in valid_files:
-                name = os.path.splitext(file_name)[0].lower()
-                full_file_path = os.path.join(path, file_name)
+                name = os.path.splitext(file_name)[0]
+                full_file_path = os.path.join(this_path, file_name)
 
                 # determine default group based on first level sub-folder and location groups
                 # configured in the assets section
@@ -465,7 +472,7 @@ class BaseAssetManager(MpfController, LogMixin):
                         ac.cls.asset_group_class(self.machine, name, settings,
                                                  ac.cls))
 
-    def _load_mode_assets(self, config, priority: int, mode: Mode)->\
+    def _load_mode_assets(self, config, priority: int, mode: Mode) -> \
             Tuple[Callable[[Iterable["Asset"]], None], Set["Asset"]]:
         # Called on mode start to load the assets that are set to automatically
         # load based on that mode starting
@@ -475,11 +482,12 @@ class BaseAssetManager(MpfController, LogMixin):
                     key_name='{}_start'.format(mode.name),
                     priority=priority))
 
-    def load_assets_by_load_key(self, key_name: str, priority: int=0) -> Set["Asset"]:
+    def load_assets_by_load_key(self, key_name: str, priority: int = 0) -> Set["Asset"]:
         """Load all the assets with a given load key.
 
         Args:
             key_name: String of the load: key name.
+            priority: Priority of this asset.
         """
         del priority
         assets = set()
@@ -522,6 +530,13 @@ class BaseAssetManager(MpfController, LogMixin):
         total = self.num_assets_to_load + self.num_bcp_assets_to_load
         remaining = total - self.num_assets_loaded - self.num_bcp_assets_loaded
 
+        # limit loading_assets events to max 5 per second
+        if remaining and self._last_asset_event_time and \
+                self._last_asset_event_time > self.machine.clock.get_time() - 0.2:
+            return
+
+        self._last_asset_event_time = self.machine.clock.get_time()
+
         self.machine.events.post(
             'loading_assets', total=total,
             loaded=self.num_assets_loaded + self.num_bcp_assets_loaded,
@@ -552,6 +567,9 @@ class BaseAssetManager(MpfController, LogMixin):
         '''
 
         if not remaining:
+            if self._start_time:
+                self.log.info("Asset loading took: %s", time.time() - self._start_time)
+            self._last_asset_event_time = None
             self.machine.events.post('asset_loading_complete')
             '''event: asset_loading_complete
             desc: Posted when the asset manager has loaded all the assets in
@@ -577,22 +595,24 @@ class BaseAssetManager(MpfController, LogMixin):
 
         if not remaining and not self.machine.is_init_done.is_set():
             self.machine.clear_boot_hold('assets')
+            self.initial_assets_loaded = True
 
 
 class AsyncioSyncAssetManager(BaseAssetManager):
 
     """AssetManager which uses asyncio to load assets."""
 
+    __slots__ = []
+
     @staticmethod
     def _load_sync(asset):
         if not asset.loaded:
             asset.do_load()
             return True
-        else:
-            return False
 
-    @asyncio.coroutine
-    def wait_for_asset_load(self, asset):
+        return False
+
+    async def wait_for_asset_load(self, asset):
         """Wait for an asset to load."""
         result = self._load_sync(asset)
         if result:
@@ -604,21 +624,18 @@ class AsyncioSyncAssetManager(BaseAssetManager):
         """Load an asset."""
         self.num_assets_to_load += 1
         task = self.machine.clock.loop.create_task(self.wait_for_asset_load(asset))
-        task.add_done_callback(self._done)
-
-    @staticmethod
-    def _done(future):
-        """Evaluate result of task.
-
-        Will raise exceptions from within task.
-        """
-        future.result()
+        task.add_done_callback(Util.raise_exceptions)
 
 
-class AssetPool(object):
+# pylint: disable=too-many-instance-attributes
+class AssetPool:
 
     """Pool of assets."""
 
+    __slots__ = ["machine", "priority", "name", "config", "member_cls", "loading_members", "_callbacks", "assets",
+                 "_last_asset", "_asset_sequence", "_assets_sent", "_total_weights", "_has_conditions"]
+
+    # Could possibly combine some or make @properties?
     def __init__(self, mc, name, config, member_cls):
         """Initialise asset pool."""
         self.machine = mc
@@ -633,6 +650,7 @@ class AssetPool(object):
         self._asset_sequence = deque()
         self._assets_sent = set()
         self._total_weights = 0
+        self._has_conditions = False
 
         if 'load' not in config:
             config['load'] = 'on_demand'
@@ -640,23 +658,19 @@ class AssetPool(object):
         if 'type' not in config:
             config['type'] = 'sequence'
 
-        for asset in Util.string_to_list(self.config[self.member_cls.config_section]):
-            try:
-                name, number = asset.split('|')
-                if not number:
-                    number = 1
-                else:
-                    number = int(number)
-            except ValueError:
-                name = asset
-                number = 1
+        for asset in Util.string_to_event_list(self.config[self.member_cls.config_section]):
+            asset_condition = self.machine.placeholder_manager.parse_conditional_template(asset, default_number=1)
+
+            # For efficiency, track whether any assets have conditions
+            if asset_condition.condition:
+                self._has_conditions = True
 
             try:
                 self.assets.append((
-                    getattr(self.machine, self.member_cls.attribute)[name],
-                    number))
+                    getattr(self.machine, self.member_cls.attribute)[asset_condition.name],
+                    asset_condition.number, asset_condition.condition))
             except KeyError:    # pragma: no cover
-                raise ValueError("No asset named {}".format(name))
+                raise ValueError("No asset named {}".format(asset_condition.name))
 
         self._configure_return_asset()
 
@@ -669,15 +683,18 @@ class AssetPool(object):
         """Pop one asset from the pool."""
         if self.config['type'] == 'random':
             return self._get_random_asset()
-        elif self.config['type'] == 'sequence':
+        if self.config['type'] == 'sequence':
             return self._get_sequence_asset()
-        elif self.config['type'] == 'random_force_next':
+        if self.config['type'] == 'random_force_next':
             return self._get_random_force_next_asset()
-        elif self.config['type'] == 'random_force_all':
+        if self.config['type'] == 'random_force_all':
             return self._get_random_force_all_asset()
+
+        raise AssertionError("Invalid type {}".format(self.config['type']))
 
     @property
     def loaded(self):
+        """Return if loaded."""
         for asset in self.assets:
             if not asset[0].loaded:
                 return False
@@ -686,6 +703,7 @@ class AssetPool(object):
 
     @property
     def loading(self):
+        """Return if loading."""
         for asset in self.assets:
             if asset[0].loading:
                 return True
@@ -694,6 +712,7 @@ class AssetPool(object):
 
     @property
     def unloading(self):
+        """Return if unloading."""
         for asset in self.assets:
             if asset[0].unloading:
                 return True
@@ -730,7 +749,7 @@ class AssetPool(object):
         return False
 
     def unload(self):
-        """Unloads all assets in the pool."""
+        """Unload all assets in the pool."""
         for asset in self.assets:
             if asset[0].loaded:
                 asset[0].unload()
@@ -748,46 +767,81 @@ class AssetPool(object):
 
         self._callbacks = set()
 
-    def _get_random_asset(self):
-        return self._pick_weighed_random(self.assets)[0]
+    def _get_conditional_assets(self):
+        if not self._has_conditions:
+            return self.assets
 
-    def _get_sequence_asset(self):
+        result = [asset for asset in self.assets
+                  if not asset[2] or asset[2].evaluate([])]
+        # Avoid crashes, return None as the asset if no conditions evaluate true
+        if not result:
+            self.machine.log.warning("AssetPool {}: {}".format(
+                self.name, "All conditional assets evaluated False and no other assets defined."))
+            result.append((None, 0))
+        return result
+
+    def _get_random_asset(self) -> AssetClass:
+        conditional_assets = self._get_conditional_assets()  # Store to variable to avoid calling twice
+        # If any asset in the group has a condition, recalculate the total weight based on what's valid
+        if self._has_conditions:
+            self._total_weights = sum([x[1] for x in conditional_assets])
+        return self._pick_weighed_random(conditional_assets)[0]
+
+    def _get_sequence_asset(self) -> AssetClass:
         self._asset_sequence.rotate(-1)
+        if self._has_conditions:
+            # Get the names of all assets that evaluate true
+            truthy_asset_names = [asset[0].name for asset in self._get_conditional_assets()]
+            # Skip any assets that have falsey conditions
+            for x in range(len(self._asset_sequence)):
+                if self._asset_sequence[0].name in truthy_asset_names:
+                    break
+                elif x == len(self._asset_sequence) - 1:
+                    self.machine.log.warning("AssetPool {}: All assets in sequence evaluated False.".format(self.name))
+                    return None
+                else:
+                    self._asset_sequence.rotate(-1)
         return self._asset_sequence[0]
 
-    def _get_random_force_next_asset(self):
-        self._total_weights = sum([x[1] for x in self.assets
+    def _get_random_force_next_asset(self) -> AssetClass:
+        conditional_assets = self._get_conditional_assets()  # Store to variable to avoid calling twice
+        self._total_weights = sum([x[1] for x in conditional_assets
                                    if x is not self._last_asset])
 
-        self._last_asset = self._pick_weighed_random([x for x in self.assets
+        self._last_asset = self._pick_weighed_random([x for x in conditional_assets
                                                       if
                                                       x is not
                                                       self._last_asset])
         return self._last_asset[0]
 
-    def _get_random_force_all_asset(self):
-        if len(self._assets_sent) == len(self.assets):
+    def _get_random_force_all_asset(self) -> AssetClass:
+        conditional_assets = self._get_conditional_assets()  # Store to variable to avoid calling twice
+        if len(self._assets_sent) == len(conditional_assets):
             self._assets_sent = set()
 
-        asset = self._pick_weighed_random([x for x in self.assets
+        asset = self._pick_weighed_random([x for x in conditional_assets
                                            if x not in self._assets_sent])
-        self._assets_sent.add(asset)
+        if asset[0] is not None:
+            self._assets_sent.add(asset)
         return asset[0]
 
-    def _pick_weighed_random(self, assets):
-        value = random.randint(1, self._total_weights)
+    def _pick_weighed_random(self, assets: List[Tuple[AssetClass, int]]) -> Tuple[AssetClass, int]:
+        if not assets or assets[0][0] is None:
+            return (None, 0)
+
+        value = random.randint(1, self._total_weights)  # nosec
         index_value = assets[0][1]
 
         for asset in assets:
             if index_value >= value:
                 return asset
-            else:
-                index_value += asset[1]
+
+            index_value += asset[1]
 
         return assets[-1]
 
 
-class Asset(object):
+class Asset:
 
     """Baseclass for all assets."""
 
@@ -804,6 +858,9 @@ class Asset(object):
     pool_config_section = None  # type: str
 
     asset_group_class = AssetPool  # replace with your own asset group class
+
+    __slots__ = ["machine", "name", "file", "config", "priority", "_callbacks", "_id", "lock", "loading", "loaded",
+                 "unloading"]
 
     @classmethod
     def initialize(cls, machine):
@@ -823,7 +880,7 @@ class Asset(object):
 
     def __init__(self, machine, name, file, config):
         """Initialise asset."""
-        self.machine = machine
+        self.machine = machine      # type: MachineController
         self.name = name
         self.file = file
 
@@ -901,14 +958,14 @@ class Asset(object):
         raise NotImplementedError
 
     def is_loaded(self):
-        """Called when asset has been loaded."""
+        """Handle that asset has been loaded."""
         self._call_callbacks()
         self.loading = False
         self.loaded = True
         self.unloading = False
 
     def unload(self):
-        """Called when the asset has been unloaded."""
+        """Handle that asset has been unloaded."""
         self.unloading = True
         self.loaded = False
         self.loading = False

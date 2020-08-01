@@ -8,10 +8,10 @@ class TestInfoLights(MpfTestCase):
         super().__init__(methodName)
         self.machine_config_patches['mpf']['plugins'] = ["mpf.plugins.info_lights.InfoLights"]
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/info_lights/'
 
     def start_game(self):
@@ -34,7 +34,7 @@ class TestInfoLights(MpfTestCase):
 
     def test_info_lights(self):
         # machine starts at gameover
-        self.advance_time_and_run(.1)
+        self.advance_time_and_run(1)
         self.assertLightColor("gameOver", [0, 0, 0])
         self.advance_time_and_run(1)
         self.assertLightColor("gameOver", [255, 255, 255])

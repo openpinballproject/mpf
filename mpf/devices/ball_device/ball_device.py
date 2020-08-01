@@ -1,16 +1,10 @@
 """Contains the base class for ball devices."""
-
+import asyncio
 from collections import deque
 
-import asyncio
-
-from mpf.core.events import QueuedEvent
+from mpf.core.events import QueuedEvent, event_handler
 from mpf.devices.ball_device.ball_count_handler import BallCountHandler
-from mpf.devices.ball_device.ball_device_ball_counter import BallDeviceBallCounter
 from mpf.devices.ball_device.ball_device_ejector import BallDeviceEjector
-
-from mpf.devices.ball_device.entrance_switch_counter import EntranceSwitchCounter
-from mpf.devices.ball_device.hold_coil_ejector import HoldCoilEjector
 
 from mpf.core.delays import DelayManager
 from mpf.core.device_monitor import DeviceMonitor
@@ -20,15 +14,12 @@ from mpf.core.utility_functions import Util
 
 from mpf.devices.ball_device.incoming_balls_handler import IncomingBallsHandler, IncomingBall
 from mpf.devices.ball_device.outgoing_balls_handler import OutgoingBallsHandler, OutgoingBall
-from mpf.devices.ball_device.pulse_coil_ejector import PulseCoilEjector
-from mpf.devices.ball_device.switch_counter import SwitchCounter
 
 
 @DeviceMonitor("available_balls", _state="state", counted_balls="balls")
 class BallDevice(SystemWideDevice):
 
-    """
-    Base class for a 'Ball Device' in a pinball machine.
+    """Base class for a 'Ball Device' in a pinball machine.
 
     A ball device is anything that can hold one or more balls, such as a
     trough, an eject hole, a VUK, a catapult, etc.
@@ -40,11 +31,15 @@ class BallDevice(SystemWideDevice):
     collection = 'ball_devices'
     class_label = 'ball_device'
 
+    __slots__ = ["delay", "available_balls", "_target_on_unexpected_ball", "_source_devices", "_ball_requests",
+                 "ejector", "ball_count_handler", "incoming_balls_handler", "outgoing_balls_handler",
+                 "counted_balls", "_state"]
+
     def __init__(self, machine, name):
         """Initialise ball device."""
         super().__init__(machine, name)
 
-        self.delay = DelayManager(machine.delayRegistry)
+        self.delay = DelayManager(machine)
 
         self.available_balls = 0
         """Number of balls that are available to be ejected. This differs from
@@ -63,7 +58,6 @@ class BallDevice(SystemWideDevice):
         # each tuple is (target device, boolean player_controlled flag)
 
         self.ejector = None                     # type: BallDeviceEjector
-        self.counter = None                     # type: BallDeviceBallCounter
         self.ball_count_handler = None          # type: BallCountHandler
         self.incoming_balls_handler = None      # type: IncomingBallsHandler
         self.outgoing_balls_handler = None      # type: OutgoingBallsHandler
@@ -74,6 +68,7 @@ class BallDevice(SystemWideDevice):
 
     def set_eject_state(self, state):
         """Set the current device state."""
+        self.info_log("State: %s", state)
         self._state = state
 
     @property
@@ -83,14 +78,15 @@ class BallDevice(SystemWideDevice):
             return self.counted_balls - 1
         return self.counted_balls
 
-    def entrance(self, **kwargs):
+    @event_handler(11)
+    def event_entrance(self, **kwargs):
         """Event handler for entrance events."""
         del kwargs
-        self.counter.received_entrance_event()
+        self.ball_count_handler.counter.received_entrance_event()
 
-    def _initialize(self):
+    async def _initialize(self):
         """Initialize right away."""
-        super()._initialize()
+        await super()._initialize()
         self._configure_targets()
 
         self.ball_count_handler = BallCountHandler(self)
@@ -98,7 +94,7 @@ class BallDevice(SystemWideDevice):
         self.outgoing_balls_handler = OutgoingBallsHandler(self)
 
         # delay ball counters because we have to wait for switches to be ready
-        self.machine.events.add_handler('init_phase_2', self._create_ball_counters)
+        self.machine.events.add_handler('init_phase_2', self._initialize_late)
 
         # check to make sure no switches from this device are tagged with
         # playfield_active, because ball devices have their own logic for
@@ -107,34 +103,29 @@ class BallDevice(SystemWideDevice):
 
         switch_set = set()
 
-        for section in ('hold_switches', 'ball_switches'):
-            for switch in self.config[section]:
-                switch_set.add(switch)
+        for switch in self.config['ball_switches']:
+            switch_set.add(switch)
 
-        if self.config['entrance_switch']:
-            switch_set.add(self.config['jam_switch'])
+        for switch in self.config['entrance_switch']:
+            switch_set.add(switch)
 
-        if self.config['entrance_switch']:
+        if self.config['jam_switch']:
             switch_set.add(self.config['jam_switch'])
 
         for switch in switch_set:
-            if switch and 'playfield_active' in switch.tags:
-                raise ValueError(
+            if switch and '{}_active'.format(self.config['captures_from'].name) in switch.tags:
+                self.raise_config_error(
                     "Ball device '{}' uses switch '{}' which has a "
-                    "'playfield_active' tag. This is not valid. Remove the "
-                    "'playfield_active' tag from that switch.".format(
-                        self.name, switch.name))
+                    "'{}_active' tag. This is handled internally by the device. Remove the "
+                    "redundant '{}_active' tag from that switch.".format(
+                        self.name, switch.name, self.config['captures_from'].name,
+                        self.config['captures_from'].name), 13)
 
-    def _create_ball_counters(self, queue: QueuedEvent, **kwargs):
+    def _initialize_late(self, queue: QueuedEvent, **kwargs):
         """Create ball counters."""
         del kwargs
-        if self.config['ball_switches']:
-            self.counter = SwitchCounter(self, self.config)
-        else:
-            self.counter = EntranceSwitchCounter(self, self.config)
-
         queue.wait()
-        complete_future = Util.ensure_future(self._initialize_async(), loop=self.machine.clock.loop)
+        complete_future = asyncio.ensure_future(self._initialize_async(), loop=self.machine.clock.loop)
         complete_future.add_done_callback(lambda x: queue.clear())
 
     def stop_device(self):
@@ -145,46 +136,47 @@ class BallDevice(SystemWideDevice):
             self.incoming_balls_handler.stop()
             self.outgoing_balls_handler.stop()
 
-    @asyncio.coroutine
-    def expected_ball_received(self):
+    async def expected_ball_received(self):
         """Handle an expected ball."""
         # post enter event
-        yield from self._post_enter_event(unclaimed_balls=0)
+        unclaimed_balls = await self._post_enter_event(unclaimed_balls=0, new_available_balls=0)
+        # there might still be unclaimed balls (e.g. because of a ball_routing)
+        self._balls_added_callback(0, unclaimed_balls)
 
-    @asyncio.coroutine
-    def unexpected_ball_received(self):
+    async def unexpected_ball_received(self):
         """Handle an unexpected ball."""
         # capture from playfield
-        yield from self._post_capture_from_playfield_event()
+        await self._post_capture_from_playfield_event()
         # post enter event
-        unclaimed_balls = yield from self._post_enter_event(unclaimed_balls=1)
+        unclaimed_balls = await self._post_enter_event(unclaimed_balls=1, new_available_balls=1)
         # add available_balls and route unclaimed ball to the default target
         self._balls_added_callback(1, unclaimed_balls)
 
-    @asyncio.coroutine
-    def lost_idle_ball(self):
-        """Lost an ball while the device was idle."""
-        if self.config['mechanical_eject']:
-            # handle lost balls via outgoing balls handler (if mechanical eject)
-            self.config['eject_targets'][0].available_balls += 1
-            eject = OutgoingBall(self.config['eject_targets'][0])
-            eject.eject_timeout = self.config['eject_timeouts'][eject.target] / 1000
-            eject.max_tries = self.config['max_eject_attempts']
-            eject.mechanical = True
-            eject.already_left = True
-            self.outgoing_balls_handler.add_eject_to_queue(eject)
-        else:
-            # handle lost balls
-            self.config['ball_missing_target'].add_missing_balls(1)
-            yield from self._balls_missing(1)
+    async def handle_mechanial_eject_during_idle(self):
+        """Handle mechanical eject."""
+        # handle lost balls via outgoing balls handler (if mechanical eject)
+        self.config['eject_targets'][0].available_balls += 1
+        eject = OutgoingBall(self.config['eject_targets'][0])
+        eject.eject_timeout = self.config['eject_timeouts'][eject.target] / 1000
+        eject.max_tries = self.config['max_eject_attempts']
+        eject.mechanical = True
+        eject.already_left = True
+        self.outgoing_balls_handler.add_eject_to_queue(eject)
 
-    @asyncio.coroutine
-    def lost_ejected_ball(self, target):
+    async def lost_idle_ball(self):
+        """Lost an ball while the device was idle."""
+        # handle lost balls
+        self.warning_log("Ball disappeared while idle. This should not normally happen.")
+        self.available_balls -= 1
+        self.config['ball_missing_target'].add_missing_balls(1)
+        await self._balls_missing(1)
+
+    async def lost_ejected_ball(self, target):
         """Handle an outgoing lost ball."""
         # follow path and check if we should request a new ball to the target or cancel the path
         if target.is_playfield():
             raise AssertionError("Lost a ball to playfield {}. This should not happen".format(target))
-        elif target.cancel_path_if_target_is(self, self.config['ball_missing_target']):
+        if target.cancel_path_if_target_is(self, self.config['ball_missing_target']):
             # add ball to default target because it would have gone there anyway
             self.warning_log("Path to %s canceled. Assuming the ball jumped to %s.", target,
                              self.config['ball_missing_target'])
@@ -198,10 +190,9 @@ class BallDevice(SystemWideDevice):
             self.warning_log("Failed to restore the path. If you can reproduce this please report in the forum!")
 
         self.config['ball_missing_target'].add_missing_balls(1)
-        yield from self._balls_missing(1)
+        await self._balls_missing(1)
 
-    @asyncio.coroutine
-    def lost_incoming_ball(self, source):
+    async def lost_incoming_ball(self, source):
         """Handle lost ball which was confirmed to have left source."""
         del source
         if self.cancel_path_if_target_is(self, self.config['ball_missing_target']):
@@ -216,7 +207,7 @@ class BallDevice(SystemWideDevice):
             self.warning_log("Failed to restore the path. If you can reproduce this please report in the forum!")
 
         self.config['ball_missing_target'].add_missing_balls(1)
-        yield from self._balls_missing(1)
+        await self._balls_missing(1)
 
     def cancel_path_if_target_is(self, start, target):
         """Check if the ball is going to a certain target and cancel the path in that case."""
@@ -226,37 +217,35 @@ class BallDevice(SystemWideDevice):
         """Try to remove available ball at the end of the path."""
         return self.outgoing_balls_handler.find_available_ball_in_path(start)
 
-    @asyncio.coroutine
-    def _initialize_async(self):
+    async def _initialize_async(self):
         """Count balls without handling them as new."""
-        yield from self.ball_count_handler.initialise()
-        yield from self.incoming_balls_handler.initialise()
-        yield from self.outgoing_balls_handler.initialise()
+        await self.ball_count_handler.initialise()
+        await self.incoming_balls_handler.initialise()
+        await self.outgoing_balls_handler.initialise()
 
         self.available_balls = self.ball_count_handler.handled_balls
 
-    @asyncio.coroutine
-    def _post_capture_from_playfield_event(self):
-        yield from self.machine.events.post_async('balldevice_captured_from_{}'.format(
+    async def _post_capture_from_playfield_event(self):
+        await self.machine.events.post_async('balldevice_captured_from_{}'.format(
             self.config['captures_from'].name),
             balls=1)
-        '''event: balldevice_captured_from_(device)
+        '''event: balldevice_captured_from_(captures_from)
 
         desc: A ball device has just captured a ball from the device called
-        (device)
+        (captures_from)
 
         args:
         balls: The number of balls that were captured.
 
         '''
 
-    @asyncio.coroutine
-    def _post_enter_event(self, unclaimed_balls):
+    async def _post_enter_event(self, unclaimed_balls, new_available_balls):
         self.debug_log("Processing new ball")
-        result = yield from self.machine.events.post_relay_async('balldevice_{}_ball_enter'.format(
+        result = await self.machine.events.post_relay_async('balldevice_{}_ball_enter'.format(
             self.name),
             new_balls=1,
             unclaimed_balls=unclaimed_balls,
+            new_available_balls=new_available_balls,
             device=self)
         '''event: balldevice_(name)_ball_enter
 
@@ -289,12 +278,16 @@ class BallDevice(SystemWideDevice):
         """Wait until this device is ready to receive a ball."""
         return self.ball_count_handler.wait_for_ready_to_receive(source)
 
-    def _source_device_balls_available(self, **kwargs):
+    @property
+    def requested_balls(self):
+        """Return the number of requested balls."""
+        return len(self._ball_requests)
+
+    def _source_device_balls_available(self, **kwargs) -> None:
         del kwargs
-        if len(self._ball_requests):
+        if self._ball_requests:
             (target, player_controlled) = self._ball_requests.popleft()
-            if self._setup_or_queue_eject_to_target(target, player_controlled):
-                return False
+            self._setup_or_queue_eject_to_target(target, player_controlled)
 
     # ---------------------- End of state handling code -----------------------
 
@@ -330,9 +323,9 @@ class BallDevice(SystemWideDevice):
 
         # cannot have ball switches and capacity
         if self.config['ball_switches'] and self.config['ball_capacity']:
-            raise AssertionError("Cannot use capacity and ball switches.")
+            self.raise_config_error("Cannot use capacity and ball switches.", 3)
         elif not self.config['ball_capacity'] and not self.config['ball_switches']:
-            raise AssertionError("Need ball capcity if there are no switches.")
+            self.raise_config_error("Need ball capcity if there are no switches.", 2)
         elif self.config['ball_switches']:
             self.config['ball_capacity'] = len(self.config['ball_switches'])
 
@@ -344,64 +337,73 @@ class BallDevice(SystemWideDevice):
     def _validate_config(self):
         # perform logical validation
         # a device cannot have hold_coil and eject_coil
-        if (not self.config['eject_coil'] and not self.config['hold_coil'] and
-                not self.config['mechanical_eject']):
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'Device needs an eject_coil, a hold_coil, or '
-                                 '"mechanical_eject: True"'.format(self.name))
+        if (not self.config.get('eject_coil') and not self.config.get('hold_coil') and
+                not self.config['mechanical_eject'] and not self.config.get('ejector', False)):
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'Device needs an eject_coil, a hold_coil, or '
+                                    '"mechanical_eject: True"'.format(self.name), 4)
 
         # entrance switch + mechanical eject is not supported
         if (len(self.config['ball_switches']) > 1 and
                 self.config['mechanical_eject']):
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'mechanical_eject can only be used with '
-                                 'devices that have 1 ball switch'.
-                                 format(self.name))
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'mechanical_eject can only be used with '
+                                    'devices that have 1 ball switch'.
+                                    format(self.name), 5)
 
         # make sure timeouts are reasonable:
         # exit_count_delay < all eject_timeout
         if self.config['exit_count_delay'] > min(
                 self.config['eject_timeouts'].values()):
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'all eject_timeouts have to be larger than '
-                                 'exit_count_delay'.
-                                 format(self.name))
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'all eject_timeouts have to be larger than '
+                                    'exit_count_delay'.
+                                    format(self.name), 6)
 
         # entrance_count_delay < all eject_timeout
         if self.config['entrance_count_delay'] > min(
                 self.config['eject_timeouts'].values()):
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'all eject_timeouts have to be larger than '
-                                 'entrance_count_delay'.
-                                 format(self.name))
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'all eject_timeouts have to be larger than '
+                                    'entrance_count_delay'.
+                                    format(self.name), 7)
 
         # all eject_timeout < all ball_missing_timeouts
         if max(self.config['eject_timeouts'].values()) > min(
                 self.config['ball_missing_timeouts'].values()):
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'all ball_missing_timeouts have to be larger '
-                                 'than all eject_timeouts'.
-                                 format(self.name))
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'all ball_missing_timeouts have to be larger '
+                                    'than all eject_timeouts'.
+                                    format(self.name), 8)
 
         # all ball_missing_timeouts < incoming ball timeout
         if max(self.config['ball_missing_timeouts'].values()) > 60000:
-            raise AssertionError('Configuration error in {} ball device. '
-                                 'incoming ball timeout has to be larger '
-                                 'than all ball_missing_timeouts'.
-                                 format(self.name))
+            self.raise_config_error('Configuration error in {} ball device. '
+                                    'incoming ball timeout has to be larger '
+                                    'than all ball_missing_timeouts'.
+                                    format(self.name), 9)
 
         if (self.config['confirm_eject_type'] == "switch" and
                 not self.config['confirm_eject_switch']):
-            raise AssertionError("When using confirm_eject_type switch you " +
-                                 "to specify a confirm_eject_switch")
+            self.raise_config_error("When using confirm_eject_type switch you " +
+                                    "to specify a confirm_eject_switch", 7)
+
+        if (self.config['confirm_eject_type'] == "event" and
+                not self.config['confirm_eject_event']):
+            self.raise_config_error("When using confirm_eject_type event you " +
+                                    "to specify a confirm_eject_event", 14)
+
+        if "ball_add_live" in self.tags:
+            self.raise_config_error("Using \"tag: ball_add_live\" is deprecated. Please use default_source_device "
+                                    "in your playfield section instead.", 10)
 
         if "drain" in self.tags and "trough" not in self.tags and not self.find_next_trough():
-            raise AssertionError("No path to trough but device is tagged as drain")
+            self.raise_config_error("No path to trough but device is tagged as drain", 11)
 
         if ("drain" not in self.tags and "trough" not in self.tags and
                 not self.find_path_to_target(self._target_on_unexpected_ball)):
-            raise AssertionError("BallDevice {} has no path to target_on_unexpected_ball '{}'".format(
-                self.name, self._target_on_unexpected_ball.name))
+            self.raise_config_error("BallDevice {} has no path to target_on_unexpected_ball '{}'".format(
+                self.name, self._target_on_unexpected_ball.name), 12)
 
     def load_config(self, config):
         """Load config."""
@@ -419,10 +421,26 @@ class BallDevice(SystemWideDevice):
         # validate that configuration is valid
         self._validate_config()
 
-        if self.config['eject_coil']:
-            self.ejector = PulseCoilEjector(self)   # pylint: disable-msg=redefined-variable-type
-        elif self.config['hold_coil']:
-            self.ejector = HoldCoilEjector(self)    # pylint: disable-msg=redefined-variable-type
+        ejector_config = self.config.get("ejector", {})
+
+        # no ejector config. support legacy config
+        if not ejector_config:
+            if self.config.get('eject_coil'):
+                if self.config.get('eject_coil_enable_time'):
+                    ejector_config["class"] = "mpf.devices.ball_device.enable_coil_ejector.EnableCoilEjector"
+                else:
+                    ejector_config["class"] = "mpf.devices.ball_device.pulse_coil_ejector.PulseCoilEjector"
+            elif self.config.get('hold_coil'):
+                ejector_config["class"] = "mpf.devices.ball_device.hold_coil_ejector.HoldCoilEjector"
+
+        if not ejector_config:
+            self.debug_log("Device does not have any ejector.")
+        else:
+            ejector_class = Util.string_to_class(ejector_config["class"])
+            if not ejector_class:
+                self.raise_config_error("Could not load ejector {}".format(ejector_config["class"]), 1)
+
+            self.ejector = ejector_class(ejector_config, self, self.machine)
 
         if self.ejector and self.config['ball_search_order']:
             self.config['captures_from'].ball_search.register(
@@ -430,7 +448,7 @@ class BallDevice(SystemWideDevice):
                 self.name)
 
         # Register events to watch for ejects targeted at this device
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device.is_playfield():
                 continue
             for target in device.config['eject_targets']:
@@ -472,7 +490,7 @@ class BallDevice(SystemWideDevice):
                 if not path:
                     raise AssertionError("Could not find path to playfield {}".format(target.name))
 
-                self.debug_log("Ejecting %s unexpected balls using path %s", unclaimed_balls, path)
+                self.info_log("Ejecting %s unexpected balls using path %s", unclaimed_balls, path)
 
                 for dummy_iterator in range(unclaimed_balls):
                     self.setup_eject_chain(path, not self.config['auto_fire_on_unexpected_ball'])
@@ -486,23 +504,38 @@ class BallDevice(SystemWideDevice):
             self.machine.events.post_boolean('balldevice_balls_available')
 
         self.machine.events.post('balldevice_{}_ball_entered'.format(self.name), new_balls=new_balls, device=self)
+        '''event: balldevice_(name)_ball_entered
 
-    @asyncio.coroutine
-    def _balls_missing(self, balls):
-        # Called when ball_count finds that balls are missing from this device
-        self.debug_log("%s ball(s) missing from device. Mechanical eject?"
-                       " %s", abs(balls), self.config['mechanical_eject'])
+        desc: A ball (or balls) have just entered the ball device called
+        "name".
 
-        yield from self.machine.events.post_async('balldevice_{}_ball_missing'.format(abs(balls)))
-        '''event: balldevice_(balls)_ball_missing.
-        desc: The number of (balls) is missing. Note this event is
-        posted in addition to the generic *balldevice_ball_missing* event.
+        The ball was also added to balls and available_balls of the device.
+
+        args:
+
+        new_balls: The number of new balls that have not been claimed (by locks or similar).
+        device: A reference to the ball device object that is posting this
+        event.
         '''
-        yield from self.machine.events.post_async('balldevice_ball_missing', balls=abs(balls))
+
+    async def _balls_missing(self, balls):
+        # Called when ball_count finds that balls are missing from this device
+        self.info_log("%s ball(s) missing from device. Mechanical eject?"
+                      " %s", abs(balls), self.config['mechanical_eject'])
+
+        await self.machine.events.post_async('balldevice_{}_ball_missing'.format(self.name), balls=abs(balls))
+        '''event: balldevice_(name)_ball_missing
+        desc: The device (name) is missing a ball. Note this event is
+        posted in addition to the generic *balldevice_ball_missing* event.
+        args:
+            balls: The number of balls that are missing
+        '''
+        await self.machine.events.post_async('balldevice_ball_missing', balls=abs(balls), name=self.name)
         '''event: balldevice_ball_missing
         desc: A ball is missing from a device.
         args:
             balls: The number of balls that are missing
+            name: Name of device which lost the ball
         '''
 
     @property
@@ -531,7 +564,13 @@ class BallDevice(SystemWideDevice):
 
         return False
 
-    def request_ball(self, balls=1, **kwargs):
+    @event_handler(1)
+    def event_request_ball(self, balls=1, **kwargs):
+        """Handle request_ball control event."""
+        del kwargs
+        self.request_ball(balls)
+
+    def request_ball(self, balls=1):
         """Request that one or more balls is added to this device.
 
         Args:
@@ -540,7 +579,6 @@ class BallDevice(SystemWideDevice):
                 itself.
             **kwargs: unused
         """
-        del kwargs
         self.debug_log("Requesting Ball(s). Balls=%s", balls)
 
         for dummy_iterator in range(balls):
@@ -572,11 +610,11 @@ class BallDevice(SystemWideDevice):
         return True
 
     def setup_player_controlled_eject(self, target=None):
-        """Setup a player controlled eject."""
-        self.debug_log("Setting up player-controlled eject. Balls: %s, "
-                       "Target: %s, player_controlled_eject_event: %s",
-                       1, target,
-                       self.config['player_controlled_eject_event'])
+        """Set up a player controlled eject."""
+        self.info_log("Setting up player-controlled eject. Balls: %s, "
+                      "Target: %s, player_controlled_eject_event: %s",
+                      1, target,
+                      self.config['player_controlled_eject_event'])
 
         if self.config['mechanical_eject'] or (
                 self.config['player_controlled_eject_event'] and self.ejector):
@@ -587,7 +625,7 @@ class BallDevice(SystemWideDevice):
             self.eject(target=target)
 
     def setup_eject_chain(self, path, player_controlled=False):
-        """Setup an eject chain."""
+        """Set up an eject chain."""
         path = deque(path)
         if self.available_balls <= 0:
             raise AssertionError("Tried to setup an eject chain, but there are"
@@ -611,7 +649,7 @@ class BallDevice(SystemWideDevice):
         '''
 
     def setup_eject_chain_next_hop(self, path, player_controlled):
-        """Setup one hop of the eject chain."""
+        """Set up one hop of the eject chain."""
         next_hop = path.popleft()
         self.debug_log("Adding eject chain")
 
@@ -626,7 +664,7 @@ class BallDevice(SystemWideDevice):
         self.outgoing_balls_handler.add_eject_to_queue(eject)
 
         # check if we traversed the whole path
-        if len(path) > 0:
+        if path:
             next_hop.setup_eject_chain_next_hop(path, player_controlled)
 
     def find_next_trough(self):
@@ -653,29 +691,34 @@ class BallDevice(SystemWideDevice):
             path.appendleft(target)
             path.appendleft(self)
             return path
-        else:
-            # otherwise find any target which can
-            for target_device in self.config['eject_targets']:
-                if target_device.is_playfield():
-                    continue
-                path = target_device.find_path_to_target(target)
-                if path:
-                    path.appendleft(self)
-                    return path
+
+        # otherwise find any target which can
+        for target_device in self.config['eject_targets']:
+            if target_device.is_playfield():
+                continue
+            path = target_device.find_path_to_target(target)
+            if path:
+                path.appendleft(self)
+                return path
 
         return False
 
-    def eject(self, balls=1, target=None, **kwargs) -> int:
+    @event_handler(2)
+    def event_eject(self, balls=1, target=None, **kwargs):
+        """Handle eject control event."""
+        del kwargs
+        self.eject(balls, target)
+
+    def eject(self, balls=1, target=None) -> int:
         """Eject balls to target.
 
         Return the number of balls found for eject. The remaining balls are queued for eject when available.
         """
-        del kwargs
         if not target:
             target = self._target_on_unexpected_ball
 
-        self.debug_log('Adding %s ball(s) to the eject_queue with target %s.',
-                       balls, target)
+        self.info_log('Adding %s ball(s) to the eject_queue with target %s.',
+                      balls, target)
 
         balls_found = 0
         # add request to queue
@@ -685,7 +728,13 @@ class BallDevice(SystemWideDevice):
 
         return balls_found
 
-    def eject_all(self, target=None, **kwargs):
+    @event_handler(3)
+    def event_eject_all(self, target=None, **kwargs):
+        """Handle eject_all control event."""
+        del kwargs
+        self.eject_all(target)
+
+    def eject_all(self, target=None) -> bool:
         """Eject all the balls from this device.
 
         Args:
@@ -693,22 +742,14 @@ class BallDevice(SystemWideDevice):
                 None means `playfield`.
             **kwargs: unused
 
-        Returns:
-            True if there are balls to eject. False if this device is empty.
+        Returns True if there are balls to eject. False if this device is empty.
         """
-        del kwargs
         self.debug_log("Ejecting all balls")
         if self.available_balls > 0:
             self.eject(balls=self.available_balls, target=target)
             return True
-        else:
-            return False
 
-    def hold(self, **kwargs):
-        """Event handler for hold event."""
-        del kwargs
-        # TODO: remove when migrating config to ejectors
-        self.ejector.hold()
+        return False
 
     @classmethod
     def is_playfield(cls):

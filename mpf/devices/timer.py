@@ -1,6 +1,7 @@
 """Mode timers."""
 from typing import List
 
+from mpf.core.device_monitor import DeviceMonitor
 from mpf.core.delays import DelayManager
 from mpf.core.mode_device import ModeDevice
 from mpf.core.player import Player
@@ -8,12 +9,13 @@ from mpf.core.mode import Mode
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.core.machine import MachineController
-    from mpf.core.clock import PeriodicTask
-    from mpf.core.events import EventHandlerKey
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.core.clock import PeriodicTask     # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.core.events import EventHandlerKey     # pylint: disable-msg=cyclic-import,unused-import
 
 
 # pylint: disable-msg=too-many-instance-attributes
+@DeviceMonitor("running", "ticks", "end_value", "max_value", "start_value")
 class Timer(ModeDevice):
 
     """Parent class for a mode timer.
@@ -41,20 +43,27 @@ class Timer(ModeDevice):
         self.tick_secs = None               # type: float
         self.player = None                  # type: Player
         self.end_value = None               # type: int
+        self.max_value = None               # type: int
+        self.ticks_remaining = None         # type: int
+        self.direction = None               # type: str
+        self.timer = None                   # type: PeriodicTask
+        self.event_keys = list()            # type: List[EventHandlerKey]
+        self.delay = None                   # type: DelayManager
 
-    def device_added_to_mode(self, mode: Mode):
+    async def device_added_to_mode(self, mode: Mode) -> None:
         """Device added in mode."""
-        super().device_added_to_mode(mode)
+        await super().device_added_to_mode(mode)
         self.tick_var = '{}_{}_tick'.format(mode.name, self.name)
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self.ticks_remaining = 0
         self.max_value = self.config['max_value']
-        self.direction = self.config['direction'].lower()
+        self.direction = self.config['direction']
         self.tick_secs = None
-        self.timer = None               # type: PeriodicTask
-        self.event_keys = list()        # type: List[EventHandlerKey]
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.timer = None
+        self.event_keys = list()
+        self.delay = DelayManager(self.machine)
 
         self.restart_on_complete = self.config['restart_on_complete']
         self.end_value = None
@@ -154,7 +163,8 @@ class Timer(ModeDevice):
                 raise AssertionError("Invalid control_event action {} in mode".
                                      format(entry['action']), self.name)
 
-            self.event_keys.append(self.machine.events.add_handler(entry['event'], handler, **kwargs))
+            self.event_keys.append(
+                self.machine.events.add_handler(entry['event'], handler, **kwargs))
 
     def _remove_control_events(self):
         self.debug_log("Removing control events")
@@ -197,7 +207,7 @@ class Timer(ModeDevice):
         self.info_log("Starting Timer.")
 
         if self._check_for_done():
-            return()
+            return
 
         self.running = True
 
@@ -281,13 +291,13 @@ class Timer(ModeDevice):
         del kwargs
 
         if not timer_value:
-            timer_value = 0  # make sure it's not None, etc.
+            pause_ms = 0  # make sure it's not None, etc.
+        else:
+            pause_ms = self._get_timer_value(timer_value) * 1000  # delays happen in ms
 
-        self.info_log("Pausing Timer for %s secs", timer_value)
+        self.info_log("Pausing Timer for %s ms", pause_ms)
 
         self.running = False
-
-        pause_secs = timer_value
 
         self._remove_system_timer()
         self.machine.events.post('timer_' + self.name + '_paused',
@@ -302,8 +312,8 @@ class Timer(ModeDevice):
             ticks_remaining: The number of ticks in this timer remaining.
         '''
 
-        if pause_secs > 0:
-            self.delay.add(name='pause', ms=pause_secs, callback=self.start)
+        if pause_ms > 0:
+            self.delay.add(name='pause', ms=pause_ms, callback=self.start)
 
     def timer_complete(self, **kwargs):
         """Automatically called when this timer completes.
@@ -394,6 +404,7 @@ class Timer(ModeDevice):
         """
         del kwargs
 
+        timer_value = self._get_timer_value(timer_value)
         ticks_added = timer_value
 
         new_value = self.ticks + ticks_added
@@ -432,7 +443,7 @@ class Timer(ModeDevice):
         """
         del kwargs
 
-        ticks_subtracted = timer_value
+        ticks_subtracted = self._get_timer_value(timer_value)
 
         self.ticks -= ticks_subtracted
 
@@ -467,7 +478,8 @@ class Timer(ModeDevice):
                 self.ticks >= self.end_value):
             self.timer_complete()
             return True
-        elif (self.direction == 'down' and
+
+        if (self.direction == 'down' and
                 self.ticks <= self.end_value):
             self.timer_complete()
             return True
@@ -492,21 +504,29 @@ class Timer(ModeDevice):
             self.machine.clock.unschedule(self.timer)
             self.timer = None
 
+    @staticmethod
+    def _get_timer_value(timer_value):
+        if hasattr(timer_value, "evaluate"):
+            # Convert to int for ticks; config_spec must be float for change_tick_interval
+            return int(timer_value.evaluate([]))
+        return timer_value
+
     def change_tick_interval(self, change=0.0, **kwargs):
         """Change the interval for each "tick" of this timer.
 
         Args:
             change: Float or int of the change you want to make to this timer's
-                tick rate. Note this value is added to the current tick
-                interval. To set an absolute value, use the set_tick_interval()
-                method. To shorten the tick rate, use a negative value.
+                tick rate. Note this value is multiplied by the current tick
+                interval: >1 will increase the tick interval (slow the timer) and
+                <1 will decrease the tick interval (accelerate the timer).
+                To set an absolute value, use the set_tick_interval() method.
             **kwargs: Not used in this method. Only exists since this method is
                 often registered as an event handler which may contain
                 additional keyword arguments.
         """
         del kwargs
 
-        self.tick_secs *= change
+        self.tick_secs *= change.evaluate([])
         self._create_system_timer()
 
     def set_tick_interval(self, timer_value, **kwargs):
@@ -524,7 +544,7 @@ class Timer(ModeDevice):
         """
         del kwargs
 
-        self.tick_secs = abs(timer_value)
+        self.tick_secs = abs(self._get_timer_value(timer_value))
         self._create_system_timer()
 
     def jump(self, timer_value, **kwargs):
@@ -541,10 +561,13 @@ class Timer(ModeDevice):
         """
         del kwargs
 
-        self.ticks = int(timer_value)
+        self.ticks = self._get_timer_value(timer_value)
 
         if self.max_value and self.ticks > self.max_value:
             self.ticks = self.max_value
+
+        self._remove_system_timer()
+        self._create_system_timer()
 
         self._check_for_done()
 

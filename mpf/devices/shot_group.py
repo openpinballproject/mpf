@@ -2,15 +2,16 @@
 
 from collections import deque
 
+from mpf.core.device_monitor import DeviceMonitor
+
 from mpf.core.events import event_handler
 from mpf.core.mode import Mode
 from mpf.core.mode_device import ModeDevice
 from mpf.core.player import Player
-from mpf.core.system_wide_device import SystemWideDevice
-from mpf.core.utility_functions import Util
 
 
-class ShotGroup(ModeDevice, SystemWideDevice):
+@DeviceMonitor("common_state", "rotation_enabled")
+class ShotGroup(ModeDevice):
 
     """Represents a group of shots in a pinball machine by grouping together multiple `Shot` class devices.
 
@@ -24,273 +25,178 @@ class ShotGroup(ModeDevice, SystemWideDevice):
     collection = 'shot_groups'
     class_label = 'shot_group'
 
+    __slots__ = ["rotation_enabled", "profile", "rotation_pattern"]
+
     def __init__(self, machine, name):
         """Initialise shot group."""
         super().__init__(machine, name)
 
-        self.rotation_enabled = True
-        self._enabled = False
+        self.rotation_enabled = None
+        self.profile = None
+        self.rotation_pattern = None
 
-        # todo remove this hack
-        self._created_system_wide = False
-
-        self.mode_config = {}
-
-    def _get_mode_config(self, mode):
-        try:
-            return self.mode_config[mode]
-        except KeyError:
-            return self.config
-
-    @property
-    def enabled(self):
-        """Return true if enabled."""
-        return self._enabled
-
-    @property
-    def can_exist_outside_of_game(self):
-        """Return true if this device can exist outside of a game."""
-        return True
-
-    @classmethod
-    def prepare_config(cls, config, is_mode_config):
-        """Add default events if not in mode."""
-        if not is_mode_config:
-            # If this device is setup in a machine-wide config, make sure it has
-            # a default enable event.
-            if 'enable_events' not in config:
-                config['enable_events'] = 'ball_starting'
-            if 'disable_events' not in config:
-                config['disable_events'] = 'ball_ended'
-            if 'reset_events' not in config:
-                config['reset_events'] = 'ball_ended'
-        return config
-
-    def device_added_system_wide(self):
-        """Called when a device is added system wide."""
-        super().device_added_system_wide()
-
-        self._created_system_wide = True
-
-    def overload_config_in_mode(self, mode, config):
-        """Overload config in mode."""
-        self.mode_config[mode.name] = config
+    def add_control_events_in_mode(self, mode) -> None:
+        """Remove enable here."""
 
     def device_loaded_in_mode(self, mode: Mode, player: Player):
         """Add device in mode."""
-        # If there are no enable_events configured, then we enable this shot
-        # group when its created on mode start
+        super().device_loaded_in_mode(mode, player)
+        self._check_for_complete()
+        self.profile = self.config['shots'][0].profile
+        self.rotation_pattern = deque(self.profile.config['rotation_pattern'])
+        self.rotation_enabled = not self.config['enable_rotation_events']
+        for shot in self.config['shots']:
+            self.machine.events.add_handler("{}_hit".format(shot.name), self._hit)
 
-        config = self._get_mode_config(mode)
-        if not config['enable_events'] or 'mode_{}_started'.format(mode.name) in config['enable_events']:
-            self.enable(mode)
-        else:
-            # manually call disable here so it disables the member shots
-            self.disable(mode)
+    def device_removed_from_mode(self, mode):
+        """Disable device when mode stops."""
+        super().device_removed_from_mode(mode)
+        self.machine.events.remove_handler(self._hit)
 
-    def _enable_related_device_debugging(self):
+    @property
+    def common_state(self):
+        """Return common state if all shots in this group are in the same state.
+
+        Will return None otherwise.
+        """
+        state = self.config['shots'][0].state_name
+        for shot in self.config['shots']:
+            if state != shot.state_name:
+                # shots do not have a common state
+                return None
+
+        return state
+
+    def _check_for_complete(self):
+        """Check if all shots in this group are in the same state."""
+        state = self.common_state
+        if not state:
+            # shots do not have a common state
+            return
+
+        # if we reached this point we got a common state
+
         self.debug_log(
-            "Enabling debugging for this shot groups's member shots")
+            "Shot group is complete with state: %s", state)
 
+        self.machine.events.post('{}_complete'.format(self.name), state=state)
+        '''event: (name)_complete
+        desc: All the member shots in the shot group called (name)
+        are in the same state.
+
+        args:
+          state: name of the common state of all shots.
+        '''
+
+        self.machine.events.post('{}_{}_complete'.format(self.name, state))
+        '''event: (name)_(state)_complete
+        desc: All the member shots in the shot group called (name)
+        are in the same state named (state).
+        '''
+
+    @event_handler(2)
+    def event_enable(self, **kwargs):
+        """Handle enable control event."""
+        del kwargs
+        self.enable()
+
+    def enable(self):
+        """Enable all member shots."""
         for shot in self.config['shots']:
-            shot.enable_debugging()
+            shot.enable()
 
-    def _disable_related_device_debugging(self):
+    @event_handler(3)
+    def event_disable(self, **kwargs):
+        """Handle disable control event."""
+        del kwargs
+        self.disable()
+
+    def disable(self):
+        """Disable all member shots."""
         for shot in self.config['shots']:
-            shot.disable_debugging()
+            shot.disable()
 
-    @event_handler(6)
-    def hit(self, mode, profile, state, **kwargs):
+    @event_handler(1)
+    def event_reset(self, **kwargs):
+        """Handle reset control event."""
+        del kwargs
+        self.reset()
+
+    def reset(self):
+        """Reset all member shots."""
+        for shot in self.config['shots']:
+            shot.reset()
+
+    @event_handler(4)
+    def event_restart(self, **kwargs):
+        """Handle restart control event."""
+        del kwargs
+        self.restart()
+
+    def restart(self):
+        """Restart all member shots."""
+        for shot in self.config['shots']:
+            shot.restart()
+
+    def _hit(self, advancing, **kwargs):
         """One of the member shots in this shot group was hit.
 
         Args:
-            profile: String name of the active profile of the shot that
-                was hit.
-            mode: unused
-            kwargs: unused
+            kwarg: {
+                profile: the current profile of the member shot that was hit
+                state: the current state of the member shot that was hit
+                advancing: boolean of whether the state is advancing
+            }
         """
-        del mode
-        del kwargs
+        if advancing:
+            self._check_for_complete()
 
-        if not profile:
-            raise AssertionError("Called hit without profile")
-
-        if not self._enabled:
-            return
-
-        self.debug_log('Hit! Active profile: %s, Current state: %s',
-                       profile, profile)
-
-        self.machine.events.post(self.name + '_hit',
-                                 profile=profile, state=state)
-        '''event: (shot_group)_hit
-        desc: A member shot in the shot group called (shot_group) was just hit.
-
-        Note that there are three events posted when a member shot is hit, each
-        with variants of the shot name, profile, and current state,
-        allowing you to key in on the specific granularity you need.
-
-        Also remember that shots can have more than one active profile at a
-        time (typically each associated with a mode), so a single hit to this
-        shot might result in this event being posted multiple times with
-        different (profile) values.
-
-        args:
-        profile: The name of the profile that was active when hit.
-        state: The name of the state the profile was in when it was hit
+        self.machine.events.post(self.name + '_hit')
+        '''event: (name)_hit
+        desc: A member shots in the shot group called (name)
+        has been hit.
+        '''
+        self.machine.events.post("{}_{}_hit".format(self.name, kwargs['state']))
+        '''event: (name)_(state)_hit
+        desc: A member shot with state (state) in the shot group (name)
+        has been hit.
         '''
 
-        self.machine.events.post(self.name + '_' + profile + '_hit',
-                                 profile=profile, state=state)
-        '''event: (shot_group)_(profile)_hit
-        desc: A member shot in the shot group called (shot_group) was just hit
-        with the profile called (profile) applied.
-
-        Note that there are three events posted when a member shot is hit, each
-        with variants of the shot name, profile, and current state,
-        allowing you to key in on the specific granularity you need.
-
-        Also remember that shots can have more than one active profile at a
-        time (typically each associated with a mode), so a single hit to this
-        shot might result in this event being posted multiple times with
-        different (profile) values.
-
-        args:
-        profile: The name of the profile that was active when hit.
-        state: The name of the state the profile was in when it was hit'''
-        self.machine.events.post(self.name + '_' + profile + '_' + state +
-                                 '_hit', profile=profile, state=state)
-        '''event: (shot_group)_(profile)_(state)_hit
-        desc: A member shot in the shot group called (shot_group) was just hit
-        with the profile called (profile) applied in the current state called
-        (state).
-
-        Note that there are three events posted when a member shot is hit, each
-        with variants of the shot name, profile, and current state,
-        allowing you to key in on the specific granularity you need.
-
-        Also remember that shots can have more than one active profile at a
-        time (typically each associated with a mode), so a single hit to this
-        shot might result in this event being posted multiple times with
-        different (profile) values.
-
-        args:
-        profile: The name of the profile that was active when hit.
-        state: The name of the state the profile was in when it was hit'''
-
-    @event_handler(10)
-    def enable(self, mode=None, profile=None, **kwargs):
-        """Enable this shot group.
-
-        Also enables all the shots in this group.
-        """
-        del kwargs
-
-        if mode:
-            self._enable_from_mode(mode, profile)
-        else:
-            self._enable_from_system_wide(profile)
-
-        self._enabled = True
-
-        self.rotation_enabled = not self.config['enable_rotation_events']
-
-        self.debug_log('Enabling from mode: %s', mode)
-
-    def _enable_from_mode(self, mode, profile=None):
-        # If we weren't passed a profile, use the one from the mode config
-
-        config = self._get_mode_config(mode)
-        if not profile and config['profile']:
-            profile = config['profile']
-
-        for shot in self.config['shots']:
-            if profile:
-                # this is a passed profile or the profile in the shot group
-                # in the mode config
-                shot.update_profile(profile=profile, mode=mode, enable=True)
-
-            else:
-                shot.update_profile(mode=mode, enable=True)
-
-            shot.register_group(self)
-
-    def _enable_from_system_wide(self, profile=None):
-        for shot in self.config['shots']:
-            if 'profile' in self.config:
-                shot.update_profile(profile=self.config['profile'],
-                                    mode=None)
-            shot.enable(profile=profile)
-            shot.register_group(self)
-
-    @event_handler(0)
-    def disable(self, mode=None, **kwargs):
-        """Disable this shot group.
-
-        Also disables all the shots in this group.
-        """
-        del kwargs
-        self._enabled = False
-        self.debug_log('Disabling from mode: %s', mode)
-
-        for shot in self.config['shots']:
-            shot.disable(mode)
-            shot.deregister_group(self)
-
     @event_handler(9)
-    def enable_rotation(self, **kwargs):
+    def event_enable_rotation(self, **kwargs):
+        """Handle enable_rotation control event."""
+        del kwargs
+        self.enable_rotation()
+
+    def enable_rotation(self):
         """Enable shot rotation.
 
         If disabled, rotation events do not actually rotate the shots.
         """
-        del kwargs
         self.debug_log('Enabling rotation')
         self.rotation_enabled = True
 
     @event_handler(2)
-    def disable_rotation(self, **kwargs):
+    def event_disable_rotation(self, **kwargs):
+        """Handle disable rotation control event."""
+        del kwargs
+        self.disable_rotation()
+
+    def disable_rotation(self):
         """Disable shot rotation.
 
         If disabled, rotation events do not actually rotate the shots.
         """
-        del kwargs
         self.debug_log('Disabling rotation')
         self.rotation_enabled = False
 
-    @event_handler(1)
-    def reset(self, mode=None, **kwargs):
-        """Reset each of the shots in this group back to the initial state in whatever shot profile they have applied.
-
-        This is the same as calling each shot's reset() method one-by-one.
-        """
-        del kwargs
-        self.debug_log('Resetting')
-        for shot in self.config['shots']:
-            shot.reset(mode)
-
-    @event_handler(3)
-    def remove_active_profile(self, mode, **kwargs):
-        """Remove the current active profile from every shot in the group."""
-        del kwargs
-        self.debug_log('Removing active profile')
-        for shot in self.config['shots']:
-            shot.remove_active_profile(mode)
-
-    @event_handler(5)
-    def advance(self, steps=1, mode=None, force=False, **kwargs):
-        """Advance the current active profile from every shot in the group one step forward."""
-        del kwargs
-
-        if not (self._enabled or force):
-            return
-
-        self.debug_log('Advancing')
-        for shot in self.config['shots']:
-            shot.advance(steps=steps, mode=mode, force=force)
-
     @event_handler(4)
-    def rotate(self, direction=None, states=None,
-               exclude_states=None, mode=None, **kwargs):
+    def event_rotate(self, direction=None, **kwargs):
+        """Handle rotate control event."""
+        del kwargs
+        self.rotate(direction)
+
+    def rotate(self, direction=None):
         """Rotate (or "shift") the state of all the shots in this group.
 
         This is used for things like lane change, where hitting the flipper
@@ -306,202 +212,65 @@ class ShotGroup(ModeDevice, SystemWideDevice):
                 to the left or right. Values are 'right' or 'left'. Default of
                 None will cause the shot group to rotate in the direction as
                 specified by the rotation_pattern.
-            states: A string of a state or a list of strings that represent the
-                targets that will be selected to rotate. If None (default), then
-                all targets will be included.
-            exclude_states: A string of a state or a list of strings that
-                controls whether any targets will *not* be rotated. (Any
-                targets with an active profile in one of these states will not
-                be included in the rotation. Default is None which means all
-                targets will be rotated)
-            kwargs: unused
 
         Note that this shot group must, and rotation_events for this
         shot group, must both be enabled for the rotation events to work.
         """
-        del kwargs
-
-        if not (self._enabled and self.rotation_enabled):
+        if not self.rotation_enabled:
             self.debug_log("Received rotation request. "
                            "Rotation Enabled: %s. Will NOT rotate",
                            self.rotation_enabled)
 
             return
 
-        # if we don't have states or exclude_states, we'll see if the first shot
-        # in the group has them and use those. Since all the shots should have
-        # the same profile applied, it's ok to just pick from the first one.
-
-        if states:
-            states = Util.string_to_lowercase_list(states)
-        else:
-            states = self.config['shots'][0].get_profile_by_key(
-                'mode', mode)['settings']['state_names_to_rotate']
-
-        if exclude_states:
-            exclude_states = Util.string_to_lowercase_list(exclude_states)
-        else:
-            exclude_states = (
-                self.config['shots'][0].get_profile_by_key(
-                    'mode', mode)['settings']['state_names_to_not_rotate'])
-
-        shot_list = list()
-
-        # build of a list of shots we're actually going to rotate
-        for shot in self.config['shots']:
-
-            if ((not states or shot.get_profile_by_key(
-                    'mode', mode)['current_state_name'] in states) and
-                    shot.get_profile_by_key(
-                    'mode', mode)['current_state_name'] not in exclude_states):
-                shot_list.append(shot)
-
         # shot_state_list is deque of tuples (state num, show step num)
         shot_state_list = deque()
 
-        for shot in shot_list:
-            try:
-                current_show_step = shot.get_profile_by_key('mode', mode)['running_show'].next_step_index
-            except AttributeError:
-                current_show_step = None
-
-            shot_state_list.append(
-                (shot.player[shot.get_profile_by_key('mode', mode)['settings']['player_variable']], current_show_step))
-
-        self.debug_log('Rotating. Mode: %s, Direction: %s, Include states:'
-                       ' %s, Exclude states: %s, Shots to be rotated: %s',
-                       mode, direction, states,
-                       exclude_states, [x.name for x in shot_list])
-
-        for shot in shot_list:
-            shot.debug_log("This shot is part of a rotation event. Current"
-                           " state: %s", shot.get_profile_by_key('mode', mode)['current_state_name'])
+        shots_to_rotate = []
+        for shot in self.config['shots']:
+            if shot.can_rotate:
+                shots_to_rotate.append(shot)
+                shot_state_list.append(shot.state)
 
         # figure out which direction we're going to rotate
         if not direction:
-            direction = shot_list[0].get_profile_by_key(
-                'mode', mode)['settings']['rotation_pattern'][0]
-            shot_list[0].get_profile_by_key(
-                'mode', mode)['settings']['rotation_pattern'].rotate(-1)
-
+            direction = self.rotation_pattern[0]
+            self.rotation_pattern.rotate(-1)
             self.debug_log("Since no direction was specified, pulling from"
                            " rotation pattern: '%s'", direction)
 
         # rotate that list
-        if direction == 'right':
+        if direction.lower() in ('right', 'r'):
             shot_state_list.rotate(1)
         else:
             shot_state_list.rotate(-1)
 
         # step through all our shots and update their states
-        for i, shot in enumerate(shot_list):
-            shot.jump(mode=mode, state=shot_state_list[i][0],
-                      show_step=shot_state_list[i][1], force=True)
+        for i, shot in enumerate(shots_to_rotate):
+            shot.jump(state=shot_state_list[i], force=True)
 
     @event_handler(8)
-    def rotate_right(self, mode=None, **kwargs):
+    def event_rotate_right(self, **kwargs):
+        """Handle rotate right control event."""
+        del kwargs
+        self.rotate_right()
+
+    def rotate_right(self):
         """Rotate the state of the shots to the right.
 
         This method is the same as calling rotate('right')
-
-        Args:
-            kwargs: unused
-
         """
-        del kwargs
-        self.rotate(direction='right', mode=mode)
+        self.rotate(direction='right')
 
     @event_handler(7)
-    def rotate_left(self, mode=None, **kwargs):
+    def event_rotate_left(self, **kwargs):
+        """Handle rotate left control event."""
+        del kwargs
+        self.rotate_left()
+
+    def rotate_left(self):
         """Rotate the state of the shots to the left.
 
         This method is the same as calling rotate('left')
-
-        Args:
-            kwargs: unused
-
         """
-        del kwargs
-        self.rotate(direction='left', mode=mode)
-
-    def check_for_complete(self, mode):
-        """Check all the shots in this shot group.
-
-        If they are all in the same state, then a complete event is posted.
-        """
-        # TODO should be made to work for lower priority things too?
-        if not self._enabled:
-            return
-
-        shot_states = set()
-
-        self.debug_log("Checking for complete. mode: %s", mode)
-
-        for shot in self.config['shots']:
-
-            mode_state = shot.get_profile_by_key('mode', mode)
-
-            if mode_state:
-                shot_states.add((mode_state['profile'],
-                                 mode_state['current_state_name']))
-
-            else:
-                self.debug_log("Shot %s is not used in this mode. Aborting"
-                               " check for complete", shot)
-                return
-
-        if len(shot_states) == 1:
-            profile, state = shot_states.pop()
-
-            self.debug_log(
-                "Shot group is complete with profile :%s, state:"
-                "%s", profile, state)
-
-            self.machine.events.post(self.name + '_complete')
-            '''event: (shot_group)_complete
-            desc: All the member shots in the shot group called (shot_group)
-            are in the same state.
-            '''
-
-            self.machine.events.post(self.name + '_' + profile + '_complete')
-            '''event: (shot_group)_(profile)_complete
-            desc: All the member shots in the shot group called (shot_group)
-            with the profile called (profile) are in the same state.
-            '''
-
-            self.machine.events.post(self.name + '_' + profile + '_' + state +
-                                     '_complete')
-            '''event: (shot_group)_(profile)_(state)_complete
-            desc: All the member shots in the shot group called (shot_group)
-            with the profile called (profile) are in the same state with the
-            name (state).
-            '''
-
-    def add_control_events_in_mode(self, mode):
-        """Add control events in mode."""
-        # called if any control_events for this shot_group exist in the mode
-        # config, regardless of whether or not the shot_group device was
-        # initially created in this mode
-        for shot in self.config['shots']:
-            if not shot.get_profile_by_key('mode', mode):
-
-                self.debug_log('Control events found in %s '
-                               'config. Adding profile list entries to '
-                               'member shots', mode)
-
-                enable = not self.config['enable_events']
-
-                if self.config['profile']:
-                    profile = self.config['profile']
-                else:
-                    profile = shot.config['profile']
-
-                shot.update_profile(profile=profile, enable=enable, mode=mode)
-
-    def device_removed_from_mode(self, mode):
-        """Disable device when mode stops."""
-        del mode
-        if self._created_system_wide:
-            return
-        self.debug_log("Removing this shot group")
-        self._enabled = False
+        self.rotate(direction='left')

@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 
 class TestBallDevicesHoldCoil(MpfTestCase):
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'test_hold_coil.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/ball_device/'
 
     def setUp(self):
@@ -87,7 +87,7 @@ class TestBallDevicesHoldCoil(MpfTestCase):
 
     def test_holdcoil_which_keeps_ball_multiple_entries(self):
         # add one ball
-        self.machine.ball_devices['test2'].counter._entrance_count = 1
+        self.machine.ball_devices['test2'].ball_count_handler.counter._last_count = 1
         self.machine.ball_devices['test2'].available_balls = 1
         self.machine.ball_devices['test2'].ball_count_handler._set_ball_count(1)
 

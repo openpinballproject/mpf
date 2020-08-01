@@ -1,14 +1,75 @@
 """Test logic blocks."""
 from mpf.tests.MpfFakeGameTestCase import MpfFakeGameTestCase
+from mpf.tests.MpfTestCase import test_config_directory
 
 
 class TestLogicBlocks(MpfFakeGameTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/logic_blocks/'
+
+    def test_mode_selection_with_counters(self):
+        self.mock_event("qualify_start_mode1")
+        self.mock_event("qualify_start_mode2")
+        self.start_game()
+        self.start_mode("mode3")
+        # advance both counters to 2/3
+        self.post_event("qualify1_count")
+        self.post_event("qualify1_count")
+        self.post_event("qualify2_count")
+        self.post_event("qualify2_count")
+
+        # post the final even for both of them
+        self.machine.switch_controller.process_switch("s_qualify1", 1, True)
+        self.machine.switch_controller.process_switch("s_qualify2", 1, True)
+        self.advance_time_and_run()
+        self.assertEventCalled("qualify_start_mode1")
+        self.assertEventNotCalled("qualify_start_mode2")
+
+    @test_config_directory("tests/machine_files/counters/")
+    def test_subscription_on_counter_values(self):
+        self.start_game()
+        self.start_mode("mode1")
+        self.assertLightColor("l_chest_matrix_green_2", "black")
+        self.assertLightColor("l_chest_matrix_green_3", "black")
+        self.assertLightColor("l_chest_matrix_green_4", "black")
+        self.assertLightColor("l_chest_matrix_green_5", "black")
+        self.post_event("count_up")
+        self.advance_time_and_run(.1)
+        self.assertLightColor("l_chest_matrix_green_2", "black")
+        self.assertLightColor("l_chest_matrix_green_3", "black")
+        self.assertLightColor("l_chest_matrix_green_4", "black")
+        self.assertLightColor("l_chest_matrix_green_5", "green")
+        self.post_event("count_up")
+        self.advance_time_and_run(.1)
+        self.assertLightColor("l_chest_matrix_green_2", "black")
+        self.assertLightColor("l_chest_matrix_green_3", "black")
+        self.assertLightColor("l_chest_matrix_green_4", "green")
+        self.assertLightColor("l_chest_matrix_green_5", "green")
+        self.post_event("count_up")
+        self.advance_time_and_run(.1)
+        self.assertLightColor("l_chest_matrix_green_2", "black")
+        self.assertLightColor("l_chest_matrix_green_3", "green")
+        self.assertLightColor("l_chest_matrix_green_4", "green")
+        self.assertLightColor("l_chest_matrix_green_5", "green")
+        self.post_event("count_up")
+        self.advance_time_and_run(.1)
+        self.assertLightColor("l_chest_matrix_green_2", "green")
+        self.assertLightColor("l_chest_matrix_green_3", "green")
+        self.assertLightColor("l_chest_matrix_green_4", "green")
+        self.assertLightColor("l_chest_matrix_green_5", "green")
+
+        self.drain_all_balls()
+        self.advance_time_and_run()
+        self.start_mode("mode1")
+
+        self.assertLightColor("l_chest_matrix_green_2", "black")
+        self.assertLightColor("l_chest_matrix_green_3", "black")
+        self.assertLightColor("l_chest_matrix_green_4", "black")
+        self.assertLightColor("l_chest_matrix_green_5", "black")
 
     def test_counter_with_lights(self):
         self.start_game()
@@ -277,6 +338,121 @@ class TestLogicBlocks(MpfFakeGameTestCase):
             self.assertEqual(2, self._events["counter2_complete"])
             self.assertEqual(6, self._events["counter2_hit"])
 
+    def test_counter_control_events(self):
+        '''
+        Tests the add, subtract, and set_value control events
+        for the Counter class.
+        '''
+        def reset_event_mocks():
+            # Reset mocks
+            self.mock_event("counter6_complete")
+            self.mock_event("counter6_hit")
+            self.mock_event("counter7_complete")
+            self.mock_event("counter7_hit")
+        self.start_game()
+        reset_event_mocks()
+        # Start mode with control events and counter6
+        self.post_event("start_mode4")
+        self.assertTrue("mode4" in self.machine.modes)
+
+        # Adds zero to the counter 10 times, counter should not reach completion
+        for i in range(10):
+            self.post_event("increase_counter6_0")
+            self.assertEqual(0, self._events["counter6_complete"])
+        # Counts the counter once, and then adds 3 to it 3 times,
+        # The last adding of three should cause the counter to complete once
+        for i in range(0, 2):
+            self.post_event("increase_counter6_3")
+            self.assertEqual(0, self._events["counter6_complete"])
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=7, remaining=3)
+        self.post_event("increase_counter6_3")
+        self.assertEqual(1, self._events["counter6_complete"])
+
+        # Test the adding of five to the counter
+        reset_event_mocks()
+        self.post_event("increase_counter6_5")
+        self.assertEqual(0, self._events["counter6_complete"])
+        self.post_event("increase_counter6_5")
+        self.assertEqual(1, self._events["counter6_complete"])
+
+        # Test subtraction
+        reset_event_mocks()
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=1, remaining=9)
+        self.post_event("reduce_counter6_5")
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=-3, remaining=13)
+        self.post_event("reduce_counter6_3")
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=-5, remaining=15)
+        self.post_event("reduce_counter6_0")
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=-4, remaining=14)
+
+        # Test Setting the Counter to a value
+        reset_event_mocks()
+        # Make sure that the counter holds a nonzero value
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=-3, remaining=13)
+        self.post_event("set_counter6_0")
+        self.post_event("counter6_count")
+        self.assertEventCalledWith("counter6_hit", count=1, remaining=9)
+        # Set the counter to a value above the completion value
+        self.assertEqual(0, self._events["counter6_complete"])
+        self.post_event("set_counter6_25")
+        self.assertEqual(1, self._events["counter6_complete"])
+
+        # Test using counter with direction down
+        # Test increasing and reducing
+        reset_event_mocks()
+        self.post_event("counter7_count")
+        self.assertEventCalledWith("counter7_hit", count=4, remaining=-4)
+        self.post_event("increase_counter7_5")
+        self.post_event("counter7_count")
+        self.assertEventCalledWith("counter7_hit", count=8, remaining=-8)
+        self.post_event("reduce_counter7_5")
+        self.post_event("counter7_count")
+        self.assertEventCalledWith("counter7_hit", count=2, remaining=-2)
+        self.assertEqual(0, self._events["counter7_complete"])
+        self.post_event("reduce_counter7_3")
+        self.assertEqual(1, self._events["counter7_complete"])
+
+        # Test setting the value with direction down counter
+        reset_event_mocks()
+        self.assertEqual(0, self._events["counter7_complete"])
+        self.post_event("set_counter7_negative25")
+        self.assertEqual(1, self._events["counter7_complete"])
+        self.post_event("set_counter7_0")
+        self.assertEqual(2, self._events["counter7_complete"])
+        self.post_event("set_counter7_3")
+        self.post_event("counter7_count")
+        self.assertEventCalledWith("counter7_hit", count=2, remaining=-2)
+
+        self.assertPlaceholderEvaluates(2, "device.counters.counter7.value")
+
+        # nothing happens because machine.test2 is undefined
+        self.post_event("set_counter_placeholder")
+        self.assertPlaceholderEvaluates(2, "device.counters.counter7.value")
+
+        self.machine.variables.set_machine_var("test2", 4)
+        self.post_event("set_counter_placeholder")
+        self.assertPlaceholderEvaluates(4, "device.counters.counter7.value")
+
+        self.post_event("subtract_counter_placeholder")
+        self.assertPlaceholderEvaluates(4, "device.counters.counter7.value")
+
+        self.machine.variables.set_machine_var("test3", 3)
+        self.post_event("subtract_counter_placeholder")
+        self.assertPlaceholderEvaluates(1, "device.counters.counter7.value")
+
+        self.post_event("add_counter_placeholder")
+        self.assertPlaceholderEvaluates(1, "device.counters.counter7.value")
+
+        self.machine.variables.set_machine_var("test4", 1)
+        self.post_event("add_counter_placeholder")
+        self.assertPlaceholderEvaluates(2, "device.counters.counter7.value")
+
     def test_logic_block_outside_game(self):
         self.mock_event("logicblock_accrual2_complete")
 
@@ -351,22 +527,56 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.start_game()
         # and enable
         self.post_event("accrual4_enable")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.enabled")
+        self.assertPlaceholderEvaluates(False, "device.accruals.accrual4.completed")
 
         # should work once
         self.post_event("accrual4_step1")
         self.post_event("accrual4_step2")
         self.assertEqual(1, self._events["logicblock_accrual4_complete"])
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.enabled")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.completed")
 
         # enabled but still completed
         self.post_event("accrual4_step1")
         self.post_event("accrual4_step2")
         self.assertEqual(1, self._events["logicblock_accrual4_complete"])
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.enabled")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.completed")
 
         # should work after reset
         self.post_event("accrual4_reset")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.enabled")
+        self.assertPlaceholderEvaluates(False, "device.accruals.accrual4.completed")
         self.post_event("accrual4_step1")
         self.post_event("accrual4_step2")
         self.assertEqual(2, self._events["logicblock_accrual4_complete"])
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.enabled")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual4.completed")
+
+    def test_reset_and_no_disable_on_complete(self):
+        self.mock_event("logicblock_accrual10_complete")
+
+        # start game
+        self.start_game()
+        # and enable
+        self.post_event("accrual10_enable")
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual10.enabled")
+        self.assertPlaceholderEvaluates(False, "device.accruals.accrual10.completed")
+
+        # should work once
+        self.post_event("accrual10_step1")
+        self.post_event("accrual10_step2")
+        self.assertEqual(1, self._events["logicblock_accrual10_complete"])
+
+        # and instantly reset and work again
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual10.enabled")
+        self.assertPlaceholderEvaluates(False, "device.accruals.accrual10.completed")
+        self.post_event("accrual10_step1")
+        self.post_event("accrual10_step2")
+        self.assertEqual(2, self._events["logicblock_accrual10_complete"])
+        self.assertPlaceholderEvaluates(True, "device.accruals.accrual10.enabled")
+        self.assertPlaceholderEvaluates(False, "device.accruals.accrual10.completed")
 
     def test_player_change(self):
         self.mock_event("logicblock_accrual5_complete")
@@ -385,7 +595,7 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.assertEqual(1, self._events["logicblock_accrual5_complete"])
 
         # player2
-        self.drain_ball()
+        self.drain_all_balls()
         self.assertPlayerNumber(2)
         self.post_event("start_mode1")
         self.advance_time_and_run(.1)
@@ -395,7 +605,7 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.assertEqual(1, self._events["logicblock_accrual5_complete"])
 
         # player1 again
-        self.drain_ball()
+        self.drain_all_balls()
         self.assertPlayerNumber(1)
         self.post_event("start_mode1")
         self.advance_time_and_run(.1)
@@ -406,7 +616,7 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.assertEqual(1, self._events["logicblock_accrual5_complete"])
 
         # player2 again
-        self.drain_ball()
+        self.drain_all_balls()
         self.assertPlayerNumber(2)
         self.post_event("start_mode1")
         self.advance_time_and_run(.1)
@@ -465,7 +675,7 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.assertEqual(1, self._events["logicblock_counter4_complete"])
         self.advance_time_and_run(1)
 
-        self.machine.set_machine_var("start", 1)
+        self.machine.variables.set_machine_var("start", 1)
         self.machine.game.player.hits = 5
         self.mock_event("logicblock_counter4_complete")
         self.mock_event("counter_counter4_hit")
@@ -495,13 +705,13 @@ class TestLogicBlocks(MpfFakeGameTestCase):
 
         self.assertEqual(0, self._events["logicblock_counter_persist_complete"])
 
-        self.drain_ball()
+        self.drain_all_balls()
         self.assertPlayerNumber(2)
 
         for i in range(10):
             self.post_event("counter_persist_count")
 
-        self.drain_ball()
+        self.drain_all_balls()
         self.assertPlayerNumber(1)
         self.post_event("start_mode1")
         self.post_event("counter_persist_enable")
@@ -520,4 +730,4 @@ class TestLogicBlocks(MpfFakeGameTestCase):
         self.post_event("counter5_count")
         self.post_event("counter5_count")
 
-        self.assertEqual(3, self.machine.counters.counter5.value)
+        self.assertEqual(3, self.machine.counters["counter5"].value)

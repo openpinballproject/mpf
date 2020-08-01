@@ -9,9 +9,9 @@ from mpf.core.mpf_controller import MpfController
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.devices.playfield import Playfield
+    from mpf.devices.playfield import Playfield     # pylint: disable-msg=cyclic-import,unused-import
 
-BallSearchCallback = namedtuple("BallSearchCallback", ["priority", "callback", "name"])
+BallSearchCallback = namedtuple("BallSearchCallback", ["priority", "callback", "name", "restore_callback"])
 
 
 class BallSearch(MpfController):
@@ -22,7 +22,6 @@ class BallSearch(MpfController):
     device, rather than being done at the global level. (In other words, each
     playfield is responsible for making sure no balls get stuck on it, and it
     leverages an instance of this BallSearch class to handle it.)
-
     """
 
     def __init__(self, machine: MachineController, playfield: "Playfield") -> None:
@@ -35,7 +34,7 @@ class BallSearch(MpfController):
         self.playfield = playfield
         """The playfield device this ball search instance is attached to."""
 
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
 
         self.started = False
         """Is the ball search process started (running) now."""
@@ -65,7 +64,7 @@ class BallSearch(MpfController):
         the event.'''
 
     def request_to_start_game(self, **kwargs):
-        """Method registered for the *request_to_start_game* event.
+        """Handle result of the *request_to_start_game* event.
 
         If ball search is running, this method will return *False* to prevent
         the game from starting while ball search is running.
@@ -87,10 +86,10 @@ class BallSearch(MpfController):
             machine is looking for a missing ball.'''
 
             return False
-        else:
-            return
 
-    def register(self, priority, callback, name):
+        return True
+
+    def register(self, priority, callback, name, *, restore_callback=None):
         """Register a callback for sequential ball search.
 
         Callbacks are called by priority. Ball search only waits if the
@@ -101,10 +100,12 @@ class BallSearch(MpfController):
             callback: callback to call. ball search will wait before the next
                 callback, if it returns true
             name: string name which is used for debugging & the logs
+            restore_callback: optional callback to restore state of the device
+                after ball search ended
         """
         self.debug_log("Registering callback: {} (priority: {})".format(
             name, priority))
-        self.callbacks.append(BallSearchCallback(priority, callback, name))
+        self.callbacks.append(BallSearchCallback(priority, callback, name, restore_callback))
         # sort by priority
         self.callbacks = sorted(self.callbacks, key=lambda entry: entry.priority)
 
@@ -201,6 +202,10 @@ class BallSearch(MpfController):
 
         desc: The ball search process has been begun.
         '''
+
+        self.machine.events.post('ball_search_phase_1', iteration=1)
+        # see description below
+
         self._run()
 
     def stop(self):
@@ -208,10 +213,15 @@ class BallSearch(MpfController):
         if not self.started:
             return
 
-        self.debug_log("Stopping ball search")
+        self.info_log("Stopping ball search")
 
         self.started = False
         self.delay.remove('run')
+
+        # restore all devices
+        for callback in self.callbacks:
+            if callback.restore_callback:
+                callback.restore_callback()
 
         self.machine.events.post('ball_search_stopped')
         '''event: ball_search_stopped
@@ -226,6 +236,17 @@ class BallSearch(MpfController):
         # Runs one iteration of the ball search.
         # Will schedule itself for the next run.
 
+        # check if we should skip this phase
+        if not self.playfield.config['ball_search_phase_{}_searches'.format(self.phase)]:
+            self.phase += 1
+            if self.phase > 3:
+                # give up
+                self.give_up()
+            else:
+                # go to the next phase
+                self._run()
+            return
+
         timeout = self.playfield.config['ball_search_interval']
 
         # iterate until we are done with all callbacks
@@ -234,6 +255,14 @@ class BallSearch(MpfController):
                 element = next(self.iterator)
             except StopIteration:
                 self.iteration += 1
+                self.machine.events.post('ball_search_phase_{}'.format(self.phase),
+                                         iteration=self.iteration)
+                '''event: ball_search_phase_(num)
+
+                desc: The ball search phase (num) has started.
+                args:
+                    iteration: Current iteration of phase (num)
+                '''
                 # give up at some point
                 if self.iteration > self.playfield.config[
                         'ball_search_phase_{}_searches'.format(self.phase)]:
@@ -266,7 +295,7 @@ class BallSearch(MpfController):
 
         This method is called when the ball search process Did not find the
         missing ball. It executes the failed action which depending on the specification of *ball_search_failed_action*,
-        either adds a replacement ball, ends the game, or ends the current ball. 
+        either adds a replacement ball, ends the game, or ends the current ball.
         """
         self.info_log("Ball Search failed to find ball. Giving up!")
         self.disable()

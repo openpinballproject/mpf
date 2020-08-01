@@ -8,7 +8,8 @@ from mpf.core.logging import LogMixin
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.core.mode import Mode
+    from mpf.core.mode import Mode      # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.platforms.smart_virtual import SmartVirtualHardwarePlatform    # pylint: disable-msg=cyclic-import,unused-import; # noqa
 
 
 class Device(LogMixin, metaclass=abc.ABCMeta):
@@ -27,6 +28,8 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
     # Can a config for this device be empty?
     allow_empty_configs = False
 
+    __slots__ = ["machine", "name", "tags", "platform", "label", "config"]
+
     def __init__(self, machine: MachineController, name: str) -> None:
         """Set up default attributes of every device.
 
@@ -36,8 +39,9 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
         """
         super().__init__()
         self.machine = machine
-        self.name = name.lower()
+        self.name = name
         self.tags = []          # type: List[str]
+        self.platform = None    # type: SmartVirtualHardwarePlatform
         """List of tags applied to this device."""
 
         self.label = None       # type: str
@@ -51,8 +55,8 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
         """Compare two devices."""
         return self.name < other.name
 
-    def device_added_to_mode(self, mode: "Mode") -> None:
-        """Called when a device is created by a mode.
+    async def device_added_to_mode(self, mode: "Mode") -> None:
+        """Add a device to a running mode.
 
         Args:
             mode: Mode which loaded the device
@@ -85,12 +89,13 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
         del is_mode_config
         return config
 
-    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str=None) -> dict:
+    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str = None) -> dict:
         """Return the parsed and validated config.
 
         Args:
             config: Config of device
             is_mode_config: Whether this device is loaded in a mode or system-wide
+            debug_prefix: Prefix to use when logging.
 
         Returns: Validated config
         """
@@ -110,7 +115,7 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
 
         self.configure_logging(self.class_label + '.' + self.name,
                                config['console_log'],
-                               config['file_log'])
+                               config['file_log'], url_base=self.class_label)
 
         self.debug_log("Configuring device with settings: '%s'", config)
 
@@ -140,6 +145,5 @@ class Device(LogMixin, metaclass=abc.ABCMeta):
 
         return cls.collection, cls.config_section
 
-    def _initialize(self):
-        """Default initialize method."""
-        pass
+    async def _initialize(self):
+        """Initialise device."""

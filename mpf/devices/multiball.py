@@ -1,14 +1,16 @@
 """Contains the MultiBall device class."""
+from mpf.core.enable_disable_mixin import EnableDisableMixin
 
 from mpf.core.delays import DelayManager
 from mpf.core.device_monitor import DeviceMonitor
 from mpf.core.events import event_handler
 from mpf.core.mode_device import ModeDevice
+from mpf.core.placeholder_manager import NativeTypeTemplate
 from mpf.core.system_wide_device import SystemWideDevice
 
 
-@DeviceMonitor("enabled", "shoot_again", "balls_added_live", "balls_live_target")
-class Multiball(SystemWideDevice, ModeDevice):
+@DeviceMonitor("shoot_again", "balls_added_live", "balls_live_target")
+class Multiball(EnableDisableMixin, SystemWideDevice, ModeDevice):
 
     """Multiball device for MPF."""
 
@@ -16,16 +18,17 @@ class Multiball(SystemWideDevice, ModeDevice):
     collection = 'multiballs'
     class_label = 'multiball'
 
+    __slots__ = ["ball_locks", "source_playfield", "delay", "balls_added_live", "balls_live_target", "shoot_again"]
+
     def __init__(self, machine, name):
         """Initialise multiball."""
         self.ball_locks = None
         self.source_playfield = None
         super().__init__(machine, name)
 
-        self.delay = DelayManager(machine.delayRegistry)
+        self.delay = DelayManager(machine)
         self.balls_added_live = 0
         self.balls_live_target = 0
-        self.enabled = False
         self.shoot_again = False
 
     @property
@@ -35,16 +38,29 @@ class Multiball(SystemWideDevice, ModeDevice):
 
     def device_removed_from_mode(self, mode):
         """Disable and stop mb when mode stops."""
-        del mode
-        # disable mb when mode ends
-        self.disable()
+        super().device_removed_from_mode(mode)
 
-        # also stop mb if no shoot again is specified
-        self.stop()
+        # also stop mb if shoot again is specified (aka the MB is currently running)
+        if self.shoot_again:
+            self.stop()
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self.ball_locks = self.config['ball_locks']
         self.source_playfield = self.config['source_playfield']
+        if isinstance(self.config['ball_count'], NativeTypeTemplate):
+            ball_count = self.config['ball_count'].evaluate([])
+        else:
+            ball_count = None
+
+        if self.config['ball_count_type'] == "total" and ball_count is not None and \
+                ball_count <= 1:
+            self.raise_config_error("ball_count should be at least 2 for a multiball to have an effect when "
+                                    "ball_count_type is set to total.", 1)
+        elif self.config['ball_count_type'] == "add" and ball_count is not None and \
+                ball_count <= 0:
+            self.raise_config_error("ball_count should be at least 1 for a multiball to have an effect when "
+                                    "ball_count_type is set to add.", 2)
 
     @classmethod
     def prepare_config(cls, config, is_mode_config):
@@ -58,6 +74,8 @@ class Multiball(SystemWideDevice, ModeDevice):
 
     def _handle_balls_in_play_and_balls_live(self):
         ball_count = self.config['ball_count'].evaluate([])
+        balls_to_replace = self.machine.game.balls_in_play if self.config['replace_balls_in_play'] else 0
+        self.debug_log("Going to add an additional {} balls for replace_balls_in_play".format(balls_to_replace))
 
         if self.config['ball_count_type'] == "total":
             # policy: total balls
@@ -71,16 +89,22 @@ class Multiball(SystemWideDevice, ModeDevice):
             self.machine.game.balls_in_play += self.balls_added_live
             self.balls_live_target = self.machine.game.balls_in_play
 
+        self.balls_added_live += balls_to_replace
+
     @event_handler(10)
-    def start(self, **kwargs):
-        """Start multiball."""
+    def event_start(self, **kwargs):
+        """Event handler for start event."""
         del kwargs
+        self.start()
+
+    def start(self):
+        """Start multiball."""
         if not self.enabled:
             return
 
         if self.balls_live_target > 0:
             self.debug_log("Cannot start MB because %s are still in play",
-                           self.balls_added_live)
+                           self.balls_live_target)
             return
 
         self.shoot_again = True
@@ -100,7 +124,8 @@ class Multiball(SystemWideDevice, ModeDevice):
         if self.balls_added_live - balls_added > 0:
             self.source_playfield.add_ball(balls=self.balls_added_live - balls_added)
 
-        if not self.config['shoot_again']:
+        shoot_again_ms = self.config['shoot_again'].evaluate([])
+        if not shoot_again_ms:
             # No shoot again. Just stop multiball right away
             self.stop()
         else:
@@ -109,9 +134,9 @@ class Multiball(SystemWideDevice, ModeDevice):
                                             self._ball_drain_shoot_again,
                                             priority=1000)
             # Register stop handler
-            if self.config['shoot_again'] > 0:
+            if shoot_again_ms > 0:
                 self.delay.add(name='disable_shoot_again',
-                               ms=self.config['shoot_again'],
+                               ms=shoot_again_ms,
                                callback=self.stop)
 
         self.machine.events.post("multiball_" + self.name + "_started",
@@ -165,9 +190,13 @@ class Multiball(SystemWideDevice, ModeDevice):
             self.debug_log("Ball drained. MB ended.")
 
     @event_handler(5)
-    def stop(self, **kwargs):
-        """Stop shoot again."""
+    def event_stop(self, **kwargs):
+        """Event handler for stop event."""
         del kwargs
+        self.stop()
+
+    def stop(self):
+        """Stop shoot again."""
         self.debug_log("Stopping shoot again of multiball")
         self.shoot_again = False
 
@@ -184,9 +213,13 @@ class Multiball(SystemWideDevice, ModeDevice):
         self.machine.events.add_handler('ball_drain', self._ball_drain_count_balls)
 
     @event_handler(8)
-    def add_a_ball(self, **kwargs):
-        """Add a ball if multiball has started."""
+    def event_add_a_ball(self, **kwargs):
+        """Event handler for add_a_ball event."""
         del kwargs
+        self.add_a_ball()
+
+    def add_a_ball(self):
+        """Add a ball if multiball has started."""
         if self.balls_live_target > 0:
             self.debug_log("Adding a ball.")
             self.balls_live_target += 1
@@ -195,48 +228,26 @@ class Multiball(SystemWideDevice, ModeDevice):
             self.source_playfield.add_ball(balls=1)
 
     @event_handler(9)
-    def start_or_add_a_ball(self, **kwargs):
-        """Start multiball or add a ball if multiball has started."""
+    def event_start_or_add_a_ball(self, **kwargs):
+        """Event handler for start_or_add_a_ball event."""
         del kwargs
+        self.start_or_add_a_ball()
+
+    def start_or_add_a_ball(self):
+        """Start multiball or add a ball if multiball has started."""
         if self.balls_live_target > 0:
             self.add_a_ball()
         else:
             self.start()
 
-    @event_handler(20)
-    def enable(self, **kwargs):
-        """Enable the multiball.
-
-        If the multiball is not enabled, it cannot start.
-
-        Args:
-            **kwargs: unused
-        """
-        del kwargs
-        self.debug_log("Enabling...")
-        self.enabled = True
-
-    @event_handler(1)
-    def disable(self, **kwargs):
-        """Disable the multiball.
-
-        If the multiball is not enabled, it cannot start. Will not stop a running multiball.
-
-        Args:
-            **kwargs: unused
-        """
-        del kwargs
-        self.debug_log("Disabling...")
-        self.enabled = False
-
     @event_handler(2)
-    def reset(self, **kwargs):
-        """Reset the multiball and disable it.
-
-        Args:
-            **kwargs: unused
-        """
+    def event_reset(self, **kwargs):
+        """Event handler for reset event."""
         del kwargs
-        self.enabled = False
+        self.reset()
+
+    def reset(self):
+        """Reset the multiball and disable it."""
+        self.disable()
         self.shoot_again = False
         self.balls_added_live = 0

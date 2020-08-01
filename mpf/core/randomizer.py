@@ -3,7 +3,7 @@ from uuid import uuid4
 import random
 
 
-class Randomizer(object):
+class Randomizer:
 
     """Generic list randomizer."""
 
@@ -19,7 +19,7 @@ class Randomizer(object):
         self.data = None
         self._uuid = uuid4()
 
-        if isinstance(items, list) or isinstance(items, tuple):
+        if isinstance(items, (list, tuple)):
             for i in items:
                 if isinstance(i, (tuple, list)):
                     this_item = i[0]
@@ -96,8 +96,8 @@ class Randomizer(object):
         if self.data['current_item_index'] == len(self.items):
             if not self.loop:
                 raise StopIteration
-            else:
-                self.data['current_item_index'] = 0
+
+            self.data['current_item_index'] = 0
 
         self.data['current_item'] = (
             self.items[self.data['current_item_index']][0])
@@ -117,8 +117,8 @@ class Randomizer(object):
         """Return current item."""
         if self.data['current_item']:
             return self.data['current_item']
-        else:
-            return self.__next__()
+
+        return self.__next__()
 
     def get_next(self):
         """Return next item."""

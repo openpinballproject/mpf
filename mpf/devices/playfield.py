@@ -1,7 +1,6 @@
 """Contains the Playfield device class which represents the actual playfield in a pinball machine."""
-import asyncio
-
 from mpf.core.device_monitor import DeviceMonitor
+from mpf.core.events import event_handler
 from mpf.core.system_wide_device import SystemWideDevice
 from mpf.core.ball_search import BallSearch
 from mpf.core.delays import DelayManager
@@ -18,6 +17,9 @@ class Playfield(SystemWideDevice):
     collection = 'playfields'
     class_label = 'playfield'
 
+    __slots__ = ["ball_search", "delay", "_balls", "available_balls", "num_balls_requested", "_incoming_balls",
+                 "__dict__"]
+
     def __init__(self, machine, name):
         """Create the playfield."""
         super().__init__(machine, name)
@@ -25,7 +27,7 @@ class Playfield(SystemWideDevice):
         """An instance of :class:`mpf.core.ball_search.BallSearch` which
         handles ball search for this playfield."""
 
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
         """An instance of :class:`mpf.core.delays.DelayManager` which
         handles delays for this playfield."""
 
@@ -38,14 +40,15 @@ class Playfield(SystemWideDevice):
 
         self._incoming_balls = []
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         if 'default' in self.config['tags']:
             self.machine.playfield = self
 
         # Set up event handlers
 
         # Watch for balls added to the playfield
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device.is_playfield():
                 continue
             for target in device.config['eject_targets']:
@@ -75,7 +78,7 @@ class Playfield(SystemWideDevice):
         self.machine.events.add_handler('sw_' + self.name + '_active',
                                         self._playfield_switch_hit)
 
-        for device in self.machine.playfield_transfers:
+        for device in self.machine.playfield_transfers.values():
             if device.config['eject_target'] == self:
                 self.machine.events.add_handler(
                     event='balldevice_' + device.name +
@@ -86,21 +89,16 @@ class Playfield(SystemWideDevice):
                     '_ejecting_ball',
                     handler=self._source_device_ejecting_ball)
 
-    @asyncio.coroutine
-    def expected_ball_received(self):
+    async def expected_ball_received(self):
         """Handle an expected ball."""
         # We do nothing in that case
-        pass
 
-    @asyncio.coroutine
-    def unexpected_ball_received(self):
+    async def unexpected_ball_received(self):
         """Handle an unexpected ball."""
         # We do nothing in that case
-        pass
 
     @staticmethod
-    @asyncio.coroutine
-    def wait_for_ready_to_receive(source):
+    async def wait_for_ready_to_receive(source):
         """Playfield is always ready to receive."""
         del source
         return True
@@ -113,7 +111,7 @@ class Playfield(SystemWideDevice):
 
     @property
     def balls(self):
-        """The number of balls on the playfield."""
+        """Return the number of balls on the playfield."""
         return self._balls
 
     @balls.setter
@@ -141,9 +139,9 @@ class Playfield(SystemWideDevice):
         if ball_change:
             self.machine.events.post(self.name + '_ball_count_change',
                                      balls=balls, change=ball_change)
-        '''event: (playfield)_ball_count_change
+        '''event: (name)_ball_count_change
 
-        desc: The playfield with the name "playfield" has changed the number
+        desc: The playfield with the name (name) has changed the number
         of balls that are live.
 
         args:
@@ -158,7 +156,7 @@ class Playfield(SystemWideDevice):
 
     @classmethod
     def get_additional_ball_capacity(cls):
-        """The number of ball which can be added.
+        """Return the number of ball which can be added.
 
         Used to find out how many more balls this device can hold. Since this
         is the playfield device, this method always returns 999.
@@ -169,7 +167,7 @@ class Playfield(SystemWideDevice):
         return 999
 
     def add_ball(self, balls=1, source_device=None,
-                 player_controlled=False):
+                 player_controlled=False) -> bool:
         """Add live ball(s) to the playfield.
 
         Args:
@@ -179,9 +177,8 @@ class Playfield(SystemWideDevice):
             player_controlled: Boolean which specifies whether this event is
                 player controlled. (See not below for details)
 
-        Returns:
-            True if it's able to process the add_ball() request, False if it
-            cannot.
+        Returns True if it's able to process the add_ball() request, False if it
+        cannot.
 
         The source_device arg is included to give you an options for specifying
         the source of the ball(s) to be added. This argument is optional, so if
@@ -224,17 +221,20 @@ class Playfield(SystemWideDevice):
         If there is no player_controlled_eject_tag, MPF assumes it's a manual
         plunger and will wait for the ball to disappear from the device based
         on the device's ball count decreasing.
-
         """
         if balls == 0:
             return False
-        elif balls < 0:
+        if balls < 0:
             raise AssertionError("Received request to add negative balls, which "
                                  "doesn't  make sense. Not adding any balls...")
 
         # Figure out which device we'll get a ball from
         if not source_device:
             source_device = self.config['default_source_device']
+
+        if not source_device:
+            self.raise_config_error("Missing a source device to request a ball. Did you define a default_source_device "
+                                    "in your playfield?", 1)
 
         self.debug_log("Received request to add %s ball(s). Source device: %s."
                        " Player-controlled: %s", balls,
@@ -244,7 +244,7 @@ class Playfield(SystemWideDevice):
             for _ in range(balls):
                 source_device.setup_player_controlled_eject(target=self)
         else:
-            source_device.eject(balls=balls, target=self, get_ball=True)
+            source_device.eject(balls=balls, target=self)
 
         return True
 
@@ -263,8 +263,8 @@ class Playfield(SystemWideDevice):
     def _mark_playfield_active(self):
         self.ball_arrived()
         self.machine.events.post_boolean(self.name + "_active")
-        '''event: (playfield)_active
-        desc: The playfield called "playfield" is now active, meaning there's
+        '''event: (name)_active
+        desc: The playfield called (name) is now active, meaning there's
         at least one loose ball on it.
         '''
 
@@ -285,8 +285,8 @@ class Playfield(SystemWideDevice):
             if not self.num_balls_requested:
                 self.debug_log("Playfield was activated with no balls expected.")
                 self.machine.events.post('unexpected_ball_on_' + self.name)
-                '''event: unexpected_ball_on_(playfield)
-                desc: The playfield named "playfield" just had a switch hit,
+                '''event: unexpected_ball_on_(name)
+                desc: The playfield named (name) just had a switch hit,
                 meaning a ball is on it, but that ball was not expected.
                 '''
 
@@ -298,8 +298,8 @@ class Playfield(SystemWideDevice):
         self.machine.events.post('sw_' + self.name + "_active",
                                  callback=self._ball_removed_handler2,
                                  balls=balls)
-        '''event: sw_(playfield)_active
-        desc: The playfield called (playfield) was active, though a ball
+        '''event: sw_(name)_active
+        desc: The playfield called (name) was active, though a ball
         was just removed from it.
 
         args:
@@ -353,7 +353,7 @@ class Playfield(SystemWideDevice):
 
     @classmethod
     def is_playfield(cls):
-        """True since it is a playfield."""
+        """Return true since it is a playfield."""
         return True
 
     def add_incoming_ball(self, incoming_ball: IncomingBall):
@@ -364,7 +364,8 @@ class Playfield(SystemWideDevice):
         """Stop tracking an incoming ball."""
         self._incoming_balls.remove(incoming_ball)
 
-    def ball_search_disable(self, **kwargs):
+    @event_handler(1)
+    def event_ball_search_disable(self, **kwargs):
         """Disable ball search for this playfield.
 
         If the ball search timer is running, it will stop and disable it. If
@@ -373,7 +374,8 @@ class Playfield(SystemWideDevice):
         del kwargs
         self.ball_search.disable()
 
-    def ball_search_enable(self, **kwargs):
+    @event_handler(2)
+    def event_ball_search_enable(self, **kwargs):
         """Enable ball search for this playfield.
 
         Note this does not start the ball search process, rather, it starts the
@@ -382,7 +384,8 @@ class Playfield(SystemWideDevice):
         del kwargs
         self.ball_search.enable()
 
-    def ball_search_block(self, **kwargs):
+    @event_handler(3)
+    def event_ball_search_block(self, **kwargs):
         """Block ball search for this playfield.
 
         Blocking will disable ball search if it's enabled or running, and will
@@ -392,7 +395,8 @@ class Playfield(SystemWideDevice):
         del kwargs
         self.ball_search.block()
 
-    def ball_search_unblock(self, **kwargs):
+    @event_handler(4)
+    def event_ball_search_unblock(self, **kwargs):
         """Unblock ball search for this playfield.
 
         This will check to see if there are balls on the playfield, and if so,

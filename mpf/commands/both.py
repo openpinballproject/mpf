@@ -11,21 +11,18 @@ def _start_mpf(mpf_path, machine_path, args):
 
 def _start_mc(mpf_path, machine_path, args):
     module = import_module('mpfmc.commands.mc')
-    module.Command(mpf_path, machine_path, args)
+    module.Command(mpf_path, machine_path, args + ["--both"])
 
 
-class Command(object):
+class Command:
 
     """Command which runs game and mc."""
 
     def __init__(self, mpf_path, machine_path, args):
         """Run game and mc."""
         multiprocessing.set_start_method('spawn')
-        mpf = multiprocessing.Process(target=_start_mpf,
-                                      args=(mpf_path, machine_path, args))
         mc = multiprocessing.Process(target=_start_mc,
                                      args=(mpf_path, machine_path, args))
-        mpf.start()
         mc.start()
-        mpf.join()
+        _start_mpf(mpf_path, machine_path, args)
         mc.join()

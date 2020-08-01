@@ -1,6 +1,7 @@
 """Handles incoming balls."""
 import asyncio
 from functools import partial
+from mpf.devices.switch import Switch
 
 from mpf.core.utility_functions import Util
 from mpf.devices.ball_device.ball_device_state_handler import BallDeviceStateHandler
@@ -38,12 +39,12 @@ class IncomingBall:
         return self._state == "left_device" and \
             (not self._external_confirm_future or self._external_confirm_future.done())
 
-    def add_external_confirm_switch(self, switch_name):
+    def add_external_confirm_switch(self, switch: Switch):
         """Add external confirm switch."""
         if self._external_confirm_future:
             raise AssertionError("Can only add external confirm once.")
 
-        self._external_confirm_future = self._source.machine.switch_controller.wait_for_switch(switch_name)
+        self._external_confirm_future = self._source.machine.switch_controller.wait_for_switch(switch)
         self._external_confirm_future.add_done_callback(self._external_confirm)
 
     def add_external_confirm_event(self, event):
@@ -55,11 +56,17 @@ class IncomingBall:
         self._external_confirm_future.add_done_callback(self._external_confirm)
 
     def _external_confirm(self, future):
-        del future
+        """Handle exteral confirm done."""
+        # do not handle canceled external confirm
+        if future.cancelled():
+            return
+        # cancel current timeout
         self._timeout_future.cancel()
+        # set up a timeout for ball missing at target
         timeout = self._source.config['ball_missing_timeouts'][self._target] / 1000
-        self._timeout_future = Util.ensure_future(asyncio.sleep(timeout, loop=self._source.machine.clock.loop),
-                                                  loop=self._source.machine.clock.loop)
+        self._timeout_future = asyncio.ensure_future(asyncio.sleep(timeout, loop=self._source.machine.clock.loop),
+                                                     loop=self._source.machine.clock.loop)
+        # set confirmed for source
         self._confirm_future.set_result(True)
 
     @property
@@ -110,6 +117,8 @@ class IncomingBallsHandler(BallDeviceStateHandler):
 
     """Handles incoming balls and timeouts."""
 
+    __slots__ = ["_incoming_balls", "_has_no_incoming_balls", "_has_incoming_balls", "_is_timeouting"]
+
     def __init__(self, ball_device):
         """Initialise incoming balls handler."""
         super().__init__(ball_device)
@@ -118,6 +127,7 @@ class IncomingBallsHandler(BallDeviceStateHandler):
         self._has_incoming_balls = asyncio.Event(loop=self.machine.clock.loop)
         self._has_no_incoming_balls = asyncio.Event(loop=self.machine.clock.loop)
         self._has_no_incoming_balls.set()
+        self._is_timeouting = asyncio.Lock(loop=self.machine.clock.loop)
 
     def get_num_incoming_balls(self):
         """Return number of incoming ball."""
@@ -127,8 +137,7 @@ class IncomingBallsHandler(BallDeviceStateHandler):
         """Wait until there are no incoming balls."""
         return self._has_no_incoming_balls.wait()
 
-    @asyncio.coroutine
-    def _run(self):
+    async def _run(self):
         """Handle timeouts."""
         while True:
             if not self._incoming_balls:
@@ -136,11 +145,19 @@ class IncomingBallsHandler(BallDeviceStateHandler):
                 self._has_no_incoming_balls.set()
 
             # sleep until we have incoming balls
-            yield from self._has_incoming_balls.wait()
+            await self._has_incoming_balls.wait()
 
+            # the incoming balls may have been removed in the meantime
+            if not self._incoming_balls:
+                continue
+
+            # wait for timeouts on incoming balls
             futures = [incoming_ball.wait_for_timeout() for incoming_ball in self._incoming_balls]
-            yield from Util.first(futures, loop=self.machine.clock.loop)
+            await Util.first(futures, loop=self.machine.clock.loop)
 
+            await self._is_timeouting.acquire()
+
+            # handle timeouts
             timeouts = []
             for incoming_ball in self._incoming_balls:
                 if incoming_ball.is_timeouted:
@@ -151,7 +168,17 @@ class IncomingBallsHandler(BallDeviceStateHandler):
                 self._incoming_balls.remove(incoming_ball)
 
             for incoming_ball in timeouts:
-                yield from self.ball_device.lost_incoming_ball(source=incoming_ball.source)
+                await self.ball_device.lost_incoming_ball(source=incoming_ball.source)
+
+            self._is_timeouting.release()
+
+    def start_eject(self):
+        """Stop counting because eject counter will do that."""
+        return self._is_timeouting.acquire()
+
+    def end_eject(self):
+        """Restart counting because eject ended."""
+        self._is_timeouting.release()
 
     def add_incoming_ball(self, incoming_ball: IncomingBall):
         """Add incoming balls."""
@@ -175,23 +202,22 @@ class IncomingBallsHandler(BallDeviceStateHandler):
         if self.ball_device.config['mechanical_eject'] and incoming_ball.wait_for_can_skip().done():
             self.ball_device.outgoing_balls_handler.remove_incoming_ball_which_may_skip(incoming_ball)
 
-    @asyncio.coroutine
-    def ball_arrived(self):
+    async def ball_arrived(self):
         """Handle one ball which arrived in the device."""
         for incoming_ball in self._incoming_balls:
             if not incoming_ball.can_arrive:
                 continue
 
             # handle incoming ball
-            self.debug_log("Received ball from %s", incoming_ball.source)
+            self.info_log("Received ball from %s", incoming_ball.source)
 
             # confirm eject
             incoming_ball.ball_arrived()
 
-            yield from self.ball_device.expected_ball_received()
+            await self.ball_device.expected_ball_received()
             break
         else:
             # handle unexpected ball
-            self.debug_log("Received unexpected ball")
+            self.info_log("Received unexpected ball")
             # let the ball device handle this ball
-            yield from self.ball_device.unexpected_ball_received()
+            await self.ball_device.unexpected_ball_received()

@@ -1,4 +1,6 @@
 """Queue Relay Config Player."""
+from mpf.core.utility_functions import Util
+
 from mpf.core.config_player import ConfigPlayer
 
 
@@ -8,10 +10,15 @@ class QueueRelayPlayer(ConfigPlayer):
 
     config_file_section = 'queue_relay_player'
 
-    def play(self, settings, context, priority=0, **kwargs):
+    __slots__ = []
+
+    def play(self, settings, context, calling_context, priority=0, **kwargs):
         """Block queue event."""
+        del calling_context
+        # prevent reposting _from_bcp setting
+        kwargs.pop("_from_bcp", None)
         try:
-            queue = kwargs['queue']
+            queue = kwargs.pop('queue')
         except KeyError:
             raise AssertionError(
                 "Can only use queue relay player with queue event.")
@@ -27,12 +34,21 @@ class QueueRelayPlayer(ConfigPlayer):
                                                   queue=queue)
         instance_dict[queue] = handler
         queue.wait()
+        if settings["pass_args"] and kwargs and settings['args']:
+            args = Util.dict_merge(kwargs, settings['args'])
+        elif settings["args"]:
+            args = settings["args"]
+        elif settings["pass_args"]:
+            args = kwargs
+        else:
+            args = {}
 
-        self.machine.events.post(settings['post'], **settings['args'])
+        self.machine.events.post(settings['post'], **args)
 
     def clear_context(self, context):
-        """Clear all queues."""
-        for queue in self._get_instance_dict(context):
+        """Clear all queues and remove handlers."""
+        for queue, handler in self._get_instance_dict(context).items():
+            self.machine.events.remove_handler_by_key(handler)
             queue.clear()
 
         self._reset_instance_dict(context)
@@ -45,6 +61,10 @@ class QueueRelayPlayer(ConfigPlayer):
     def _callback(self, queue, context, **kwargs):
         del kwargs
         instance_dict = self._get_instance_dict(context)
+        # bail out on error
+        if queue not in instance_dict:
+            raise AssertionError("Queue {} missing in instance dict: {}.".format(queue, instance_dict))
+
         self.machine.events.remove_handler_by_key(instance_dict[queue])
         del instance_dict[queue]
         queue.clear()

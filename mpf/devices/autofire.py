@@ -8,7 +8,8 @@ from mpf.core.system_wide_device import SystemWideDevice
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.core.machine import MachineController
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
+    from typing import List     # pylint: disable-msg=cyclic-import,unused-import
 
 
 @DeviceMonitor(_enabled="enabled")
@@ -33,23 +34,51 @@ class AutofireCoil(SystemWideDevice):
     collection = 'autofires'
     class_label = 'autofire'
 
+    __slots__ = ["_enabled", "_rule", "delay", "_ball_search_in_progress", "_timeout_watch_time", "_timeout_max_hits",
+                 "_timeout_disable_time", "_timeout_hits"]
+
     def __init__(self, machine: "MachineController", name: str) -> None:
         """Initialise autofire."""
         self._enabled = False
         self._rule = None       # type: HardwareRule
         super().__init__(machine, name)
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
         self._ball_search_in_progress = False
+        self._timeout_watch_time = None
+        self._timeout_max_hits = None
+        self._timeout_disable_time = None
+        self._timeout_hits = []     # type: List[float]
 
-    def _initialize(self) -> None:
+    async def _initialize(self):
+        await super()._initialize()
         if self.config['ball_search_order']:
             self.config['playfield'].ball_search.register(
                 self.config['ball_search_order'], self._ball_search, self.name)
         # pulse is handled via rule but add a handler so that we take notice anyway
         self.config['switch'].add_handler(self._hit)
+        if self.config['timeout_watch_time']:
+            self._timeout_watch_time = self.config['timeout_watch_time'] / 1000
+            self._timeout_max_hits = self.config['timeout_max_hits']
+            self._timeout_disable_time = self.config['timeout_disable_time']
 
-    @event_handler(10)
-    def enable(self, **kwargs):
+        if '{}_active'.format(self.config['playfield'].name) in self.config['switch'].tags:
+            self.raise_config_error(
+                "Autofire device '{}' uses switch '{}' which has a "
+                "'{}_active' tag. This is handled internally by the device. Remove the "
+                "redundant '{}_active' tag from that switch.".format(
+                    self.name, self.config['switch'].name, self.config['playfield'].name,
+                    self.config['playfield'].name), 1)
+
+    @event_handler(1)
+    def event_enable(self, **kwargs):
+        """Handle enable control event.
+
+        To prevent multiple rules at the same time we prioritize disable > enable.
+        """
+        del kwargs
+        self.enable()
+
+    def enable(self):
         """Enable the autofire device.
 
         This causes the coil to respond to the switch hits. This is typically
@@ -66,27 +95,54 @@ class AutofireCoil(SystemWideDevice):
                 event callback.
 
         """
-        del kwargs
-
         if self._enabled:
             return
         self._enabled = True
 
         self.debug_log("Enabling")
 
-        recycle = True if self.config['coil_overwrite'].get('recycle', None) in (True, None) else False
-        debounce = False if self.config['switch_overwrite'].get('debounce', None) in (None, "quick") else True
+        if self.config['coil_overwrite'].get('recycle', None) is not None:
+            # if coil_overwrite is set use it
+            recycle = self.config['coil_overwrite']['recycle']
+        else:
+            # otherwise load the default from the coil and turn None to True
+            recycle = self.config['coil'].config['default_recycle'] in (True, None)
 
-        self._rule = self.machine.platform_controller.set_pulse_on_hit_rule(
-            SwitchRuleSettings(switch=self.config['switch'], debounce=debounce,
-                               invert=self.config['reverse_switch']),
-            DriverRuleSettings(driver=self.config['coil'], recycle=recycle),
-            PulseRuleSettings(duration=self.config['coil_overwrite'].get('pulse_ms', None),
-                              power=self.config['coil_overwrite'].get('pulse_power', None))
-        )
+        if self.config['switch_overwrite'].get('debounce', None) is not None:
+            # if switch_overwrite is set use it
+            debounce = self.config['switch_overwrite']['debounce'] == "normal"
+        else:
+            # otherwise load the default from the switch and turn auto into False
+            debounce = self.config['switch'].config['debounce'] == "normal"
 
-    @event_handler(1)
-    def disable(self, **kwargs):
+        if not self.config['coil_pulse_delay']:
+            self._rule = self.machine.platform_controller.set_pulse_on_hit_rule(
+                SwitchRuleSettings(switch=self.config['switch'], debounce=debounce,
+                                   invert=self.config['reverse_switch']),
+                DriverRuleSettings(driver=self.config['coil'], recycle=recycle),
+                PulseRuleSettings(duration=self.config['coil_overwrite'].get('pulse_ms', None),
+                                  power=self.config['coil_overwrite'].get('pulse_power', None))
+            )
+        else:
+            self._rule = self.machine.platform_controller.set_delayed_pulse_on_hit_rule(
+                SwitchRuleSettings(switch=self.config['switch'], debounce=debounce,
+                                   invert=self.config['reverse_switch']),
+                DriverRuleSettings(driver=self.config['coil'], recycle=recycle),
+                self.config['coil_pulse_delay'],
+                PulseRuleSettings(duration=self.config['coil_overwrite'].get('pulse_ms', None),
+                                  power=self.config['coil_overwrite'].get('pulse_power', None))
+            )
+
+    @event_handler(10)
+    def event_disable(self, **kwargs):
+        """Handle disable control event.
+
+        To prevent multiple rules at the same time we prioritize disable > enable.
+        """
+        del kwargs
+        self.disable()
+
+    def disable(self):
         """Disable the autofire device.
 
         This is typically called at the end of a ball and when a tilt event
@@ -97,7 +153,7 @@ class AutofireCoil(SystemWideDevice):
                 event callback.
 
         """
-        del kwargs
+        self.delay.remove("_timeout_enable_delay")
 
         if not self._enabled:
             return
@@ -108,8 +164,18 @@ class AutofireCoil(SystemWideDevice):
 
     def _hit(self):
         """Rule was triggered."""
+        if not self._enabled:
+            return
         if not self._ball_search_in_progress:
             self.config['playfield'].mark_playfield_active_from_device_action()
+        if self._timeout_watch_time:
+            current_time = self.machine.clock.get_time()
+            self._timeout_hits = [t for t in self._timeout_hits if t > current_time - self._timeout_watch_time / 1000.0]
+            self._timeout_hits.append(current_time)
+
+            if len(self._timeout_hits) >= self._timeout_max_hits:
+                self.disable()
+                self.delay.add(self._timeout_disable_time, self.enable, "_timeout_enable_delay")
 
     def _ball_search(self, phase, iteration):
         del phase

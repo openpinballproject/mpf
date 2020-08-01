@@ -6,7 +6,7 @@ Typically in an EM machine.
 import logging
 
 
-class InfoLights(object):
+class InfoLights:
 
     """Uses lights to represent game state.
 
@@ -118,6 +118,3 @@ class InfoLights(object):
         match_str = 'match_' + str(match)
         if match_str in self.config:
             self.config[match_str]['light'].on()
-
-
-plugin_class = InfoLights

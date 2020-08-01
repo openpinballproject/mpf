@@ -2,6 +2,7 @@
 from copy import deepcopy
 
 from mpf.config_players.device_config_player import DeviceConfigPlayer
+from mpf.devices.driver import Driver
 
 
 class CoilPlayer(DeviceConfigPlayer):
@@ -12,22 +13,35 @@ class CoilPlayer(DeviceConfigPlayer):
     show_section = 'coils'
     machine_collection_name = 'coils'
 
-    def play(self, settings, context, priority=0, **kwargs):
+    __slots__ = []  # List[str]
+
+    def play(self, settings, context: str, calling_context: str, priority: int = 0, **kwargs):
         """Enable, Pulse or disable coils."""
         del kwargs
+        del calling_context
         instance_dict = self._get_instance_dict(context)
 
         for coil, s in settings.items():
             s = deepcopy(s)
+            if not isinstance(coil, Driver):
+                self.raise_config_error("Invalid coil name {}".format(coil), 2, context=context)
             action = s.pop('action')
-            coil_action = getattr(coil, action)
 
-            if action in ("disable", "off") and coil.name in instance_dict:
+            # delete coil from dict
+            try:
                 del instance_dict[coil.name]
+            except KeyError:
+                pass
+
+            if action in ("disable", "off"):
+                coil.disable()
             elif action in ("on", "enable"):
                 instance_dict[coil.name] = coil
-
-            coil_action(**s)
+                coil.enable(pulse_ms=s["pulse_ms"], pulse_power=s["pulse_power"], hold_power=s["hold_power"])
+            elif action == "pulse":
+                coil.pulse(pulse_ms=s['pulse_ms'], pulse_power=s['pulse_power'], max_wait_ms=s['max_wait_ms'])
+            else:
+                self.raise_config_error("Invalid action {}".format(action), 1, context=context)
 
     def clear_context(self, context):
         """Disable enabled coils."""
@@ -53,4 +67,4 @@ class CoilPlayer(DeviceConfigPlayer):
         elif value in ('enable', 'on'):
             action = 'enable'
 
-        return dict(action=action, power=1.0)
+        return dict(action=action)

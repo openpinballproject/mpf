@@ -2,11 +2,15 @@
 
 hardware:
     platform: fast
-    driverboards: fast
 
 fast:
+    driverboards: fast
     ports: com4, com5, com6
     debug: true
+    firmware_updates:
+      - type: net
+        version: "1.04"
+        file: "firmware/FAST_NET_01_04_00.txt"
 
 switches:
     s_test:
@@ -27,6 +31,26 @@ switches:
         number: 3
     s_test3:
         number: 3-1
+    s_nux_up:
+        number: 0-11
+    s_nux_down:
+        number: 0-12
+
+digital_outputs:
+  c_nux_motor:
+    number: 0-1
+    type: driver
+
+motors:
+  motorized_drop_target_bank:
+    motor_left_output: c_nux_motor
+    position_switches: !!omap
+      - up: s_nux_up
+      - down: s_nux_down
+    reset_position: up
+    go_to_position:
+      go_up: up
+      go_down: down
 
 coils:
     c_test:
@@ -45,6 +69,11 @@ coils:
         number: 17
         default_pulse_power: 0.53
         default_hold_power: 0.40
+    c_hold_ssm:
+        number: 19
+        default_hold_power: 0.25    # approximately
+        platform_settings:
+            hold_pwm_patter: "84224244"
     c_long_pulse:
         number: 18
         default_pulse_ms: 2000
@@ -121,5 +150,8 @@ lights:
     number: 2-23
     type: grb
   test_led2:
-    number: 2-25
+    previous: test_led
+    type: grb
+  l_o_circle:
+    number: 0-10
     type: grb

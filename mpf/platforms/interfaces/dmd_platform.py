@@ -6,6 +6,8 @@ class DmdPlatformInterface(metaclass=abc.ABCMeta):
 
     """Interface for monochrome DMDs in hardware platforms."""
 
+    __slots__ = []
+
     @abc.abstractmethod
     def update(self, data: bytes):
         """Update data on the DMD.
@@ -13,4 +15,9 @@ class DmdPlatformInterface(metaclass=abc.ABCMeta):
         Args:
             data: bytes to send to DMD
         """
-        raise NotImplementedError('implement')
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def set_brightness(self, brightness: float):
+        """Set brightness of DMD."""
+        raise NotImplementedError

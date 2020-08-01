@@ -1,11 +1,5 @@
 #config_version=5
 
-machine:
-    min_balls: 0
-
-game:
-    balls_per_game: 3
-
 switches:
     s_start:
         number: 1
@@ -61,63 +55,51 @@ score_reels:
         coil_inc: player1_10k
         switch_0: score_1p_10k_0
         switch_9: score_1p_10k_9
-        rollover: True
         limit_hi: 9
         limit_lo: 0
-        repeat_pulse_time: 200ms
-        hw_confirm_time: 300ms
+        debug: True
     score_1p_1k:
         coil_inc: player1_1k
         switch_0: score_1p_1k_0
         switch_9: score_1p_1k_9
-        rollover: True
         limit_hi: 9
         limit_lo: 0
-        repeat_pulse_time: 200ms
-        hw_confirm_time: 300ms
+        debug: True
     score_1p_100:
         coil_inc: player1_100
         switch_0: score_1p_100_0
         switch_9: score_1p_100_9
-        rollover: True
         limit_hi: 9
         limit_lo: 0
-        repeat_pulse_time: 200ms
-        hw_confirm_time: 300ms
+        debug: True
     score_1p_10:
         coil_inc: player1_10
         switch_0: score_1p_10_0
         switch_9: score_1p_10_9
-        rollover: True
         limit_hi: 9
         limit_lo: 0
-        repeat_pulse_time: 200ms
-        hw_confirm_time: 300ms
+        debug: True
     score_2p_10:
         coil_inc: player2_10
         switch_0: score_2p_10_0
         switch_9: score_2p_10_9
-        rollover: True
         limit_hi: 9
         limit_lo: 0
-        repeat_pulse_time: 200ms
-        hw_confirm_time: 300ms
+        debug: True
 
 score_reel_groups:
     player1:
         reels: score_1p_10k, score_1p_1k, score_1p_100, score_1p_10, None
         tags: player1
-        max_simultaneous_coils: 2
         chimes: None, chime1, chime2, chime3, None
-        confirm: lazy
         lights_tag: player1
+        debug: True
     player2:
         reels: score_2p_10, None
         tags: player2
-        max_simultaneous_coils: 2
         chimes: chime3, None
-        confirm: lazy
         lights_tag: player2
+        debug: True
 
 lights:
     light_p1:

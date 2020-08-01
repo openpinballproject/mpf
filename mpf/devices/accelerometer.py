@@ -1,5 +1,4 @@
 """Contains the Accelerometer device."""
-
 import math
 from typing import Tuple
 
@@ -40,11 +39,18 @@ class Accelerometer(SystemWideDevice):
         self.value = None       # type: Tuple[float, float, float]
         self.hw_device = None   # type: AccelerometerPlatformInterface
 
-    def _initialize(self):
+    async def _initialize(self):
         """Initialise and configure accelerometer."""
+        await super()._initialize()
         self.platform = self.machine.get_platform_sections(
             'accelerometers', self.config['platform'])
-        self.hw_device = self.platform.configure_accelerometer(self.config, self)
+        self.platform.assert_has_feature("accelerometers")
+
+        if not self.platform.features['allow_empty_numbers'] and self.config['number'] is None:
+            self.raise_config_error("Accelerometer must have a number.", 1)
+
+        self.hw_device = self.platform.configure_accelerometer(self.config['number'],
+                                                               self.config['platform_settings'], self)
 
     @classmethod
     def _calculate_vector_length(cls, x: float, y: float, z: float) -> float:
@@ -72,13 +78,15 @@ class Accelerometer(SystemWideDevice):
             dy = y - self.history[1]
             dz = z - self.history[2]
 
-            alpha = 0.95
+            alpha = self.config['alpha']
             self.history = (self.history[0] * alpha + x * (1 - alpha),
                             self.history[1] * alpha + y * (1 - alpha),
                             self.history[2] * alpha + z * (1 - alpha))
 
         self._handle_hits(dx, dy, dz)
-        self._handle_level()
+        # only check level when we are in a stedy state
+        if math.fabs(dx) + math.fabs(dy) + math.fabs(dz) < 0.05:
+            self._handle_level()
 
     def get_level_xyz(self) -> float:
         """Return current 3D level."""
@@ -102,6 +110,7 @@ class Accelerometer(SystemWideDevice):
                                      0.0, self.value[1], self.value[2])
 
     def _handle_level(self) -> None:
+
         deviation_xyz = self.get_level_xyz()
         deviation_xz = self.get_level_xz()
         deviation_yz = self.get_level_yz()

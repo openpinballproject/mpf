@@ -1,11 +1,12 @@
 """A shot in MPF."""
-
 import uuid
 from collections import namedtuple
 from typing import List, Dict, Set
 
 import mpf.core.delays
+from mpf.core.events import event_handler
 from mpf.core.mode import Mode
+from mpf.core.player import Player
 from mpf.core.mode_device import ModeDevice
 from mpf.core.system_wide_device import SystemWideDevice
 
@@ -20,11 +21,13 @@ class SequenceShot(SystemWideDevice, ModeDevice):
     collection = 'sequence_shots'
     class_label = 'sequence_shot'
 
+    __slots__ = ["delay", "active_sequences", "active_delays", "_sequence_events", "_delay_events"]
+
     def __init__(self, machine, name):
         """Initialise sequence shot."""
         super().__init__(machine, name)
 
-        self.delay = mpf.core.delays.DelayManager(self.machine.delayRegistry)
+        self.delay = mpf.core.delays.DelayManager(self.machine)
         self.active_sequences = list()  # type: List[ActiveSequence]
         self.active_delays = set()      # type: Set[str]
 
@@ -36,24 +39,25 @@ class SequenceShot(SystemWideDevice, ModeDevice):
         """Return true if this device can exist outside of a game."""
         return True
 
-    def device_added_system_wide(self):
+    async def device_added_system_wide(self):
         """Register switch handlers on load."""
-        super().device_added_system_wide()
+        await super().device_added_system_wide()
         self._register_handlers()
 
-    def device_added_to_mode(self, mode: Mode):
+    def device_loaded_in_mode(self, mode: Mode, player: Player):
         """Register switch handlers on mode start."""
-        super().device_added_to_mode(mode)
+        super().device_loaded_in_mode(mode, player)
         self._register_handlers()
 
     def device_removed_from_mode(self, mode):
         """Unregister switch handlers on mode end."""
         del mode
         self._remove_handlers()
-        self._reset_all_sequences()
+        self.reset_all_sequences()
         self.delay.clear()
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         if self.config['switch_sequence'] and self.config['event_sequence']:
             raise AssertionError("Sequence shot {} only supports switch_sequence or event_sequence".format(self.name))
 
@@ -63,16 +67,16 @@ class SequenceShot(SystemWideDevice, ModeDevice):
             self._sequence_events.append(self.machine.switch_controller.get_active_event_for_switch(switch.name))
 
     def _register_handlers(self):
-        for event in self._sequence_events:
+        for event in set(self._sequence_events):
             self.machine.events.add_handler(event, self._sequence_advance, event_name=event)
 
         for switch in self.config['cancel_switches']:
-            self.machine.switch_controller.add_switch_handler(
-                switch.name, self.cancel, 1)
+            self.machine.switch_controller.add_switch_handler_obj(
+                switch, self.event_cancel, 1)
 
         for switch, ms in list(self.config['delay_switch_list'].items()):
-            self.machine.switch_controller.add_switch_handler(
-                switch.name, self._delay_switch_hit, 1, callback_kwargs={"name": switch.name, "ms": ms})
+            self.machine.switch_controller.add_switch_handler_obj(
+                switch, self._delay_switch_hit, 1, callback_kwargs={"name": switch.name, "ms": ms})
 
         for event, ms in list(self.config['delay_event_list'].items()):
             self.machine.events.add_handler(event, self._delay_switch_hit, name=event, ms=ms)
@@ -83,17 +87,21 @@ class SequenceShot(SystemWideDevice, ModeDevice):
 
         for switch in self.config['cancel_switches']:
             self.machine.switch_controller.remove_switch_handler(
-                switch.name, self.cancel, 1)
+                switch.name, self.event_cancel, 1)
 
-        for switch in list(self.config['delay_switch'].keys()):
+        for switch in list(self.config['delay_switch_list'].keys()):
             self.machine.switch_controller.remove_switch_handler(
                 switch.name, self._delay_switch_hit, 1)
 
     def _sequence_advance(self, event_name, **kwargs):
-        # Since we can track multiple simulatenous sequences (e.g. two balls
+        # Since we can track multiple simultaneous sequences (e.g. two balls
         # going into an orbit in a row), we first have to see whether this
         # switch is starting a new sequence or continuing an existing one
         del kwargs
+
+        # mark playfield active
+        if self.config['playfield']:
+            self.config['playfield'].mark_playfield_active_from_device_action()
 
         self.debug_log("Sequence advance: %s", event_name)
 
@@ -101,7 +109,7 @@ class SequenceShot(SystemWideDevice, ModeDevice):
             if len(self._sequence_events) > 1:
                 # start a new sequence
                 self._start_new_sequence()
-            else:
+            elif not self.active_delays:
                 # if it only has one step it will finish right away
                 self._completed()
         else:
@@ -162,14 +170,19 @@ class SequenceShot(SystemWideDevice, ModeDevice):
 
     def _completed(self):
         """Post sequence complete event."""
-        self.machine.events.post("{}_complete".format(self.name))
+        self.machine.events.post("{}_hit".format(self.name))
+        '''event: (name)_hit
+        desc: The sequence_shot called (name) was just completed.
+        '''
 
-    def cancel(self, **kwargs):
-        """Reset all sequences."""
+    @event_handler(0)
+    def event_cancel(self, **kwargs):
+        """Event handler for cancel event."""
         del kwargs
-        self._reset_all_sequences()
+        self.reset_all_sequences()
 
-    def _reset_all_sequences(self):
+    def reset_all_sequences(self):
+        """Reset all sequences."""
         seq_ids = [x.id for x in self.active_sequences]
 
         for seq_id in seq_ids:
@@ -179,6 +192,7 @@ class SequenceShot(SystemWideDevice, ModeDevice):
 
     def _delay_switch_hit(self, name, ms, **kwargs):
         del kwargs
+        self.debug_log("Delaying sequence by %sms", ms)
         self.delay.reset(name=name + '_delay_timer',
                          ms=ms,
                          callback=self._release_delay,

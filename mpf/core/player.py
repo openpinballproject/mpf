@@ -2,12 +2,10 @@
 import copy
 import logging
 
-from mpf.core.case_insensitive_dict import CaseInsensitiveDict
-
 from mpf.core.utility_functions import Util
 
 
-class Player(object):
+class Player:
 
     """Base class for a player in a game.
 
@@ -88,7 +86,7 @@ class Player(object):
         # use self.__dict__ below since __setattr__ would make these player vars
         self.__dict__['log'] = logging.getLogger("Player")
         self.__dict__['machine'] = machine
-        self.__dict__['vars'] = CaseInsensitiveDict()
+        self.__dict__['vars'] = dict()
         self.__dict__['_events_enabled'] = False
 
         number = index + 1
@@ -138,12 +136,11 @@ class Player(object):
         """Enable/disable player variable events.
 
         Args:
-
             enable: Flag to enable/disable player variable events
             send_all_variables: Flag indicating whether or not to send an event
                 with the current value of every player variable.
         """
-        self._events_enabled = enable
+        self._events_enabled = enable   # noqa
 
         # Send all current player variable values as events (if requested)
         if enable and send_all_variables:
@@ -158,6 +155,7 @@ class Player(object):
                 else:
                     self._send_variable_event(name, value, value, 0, self.vars['number'])
 
+    # pylint: disable-msg=too-many-arguments
     def _send_variable_event(self, name: str, value, prev_value, change, player_num: int):
         """Send a player variable event performs any monitor callbacks if configured.
 
@@ -169,10 +167,12 @@ class Player(object):
         """
         self.machine.events.post('player_' + name,
                                  value=value,
-                                 prev_value=value,
+                                 prev_value=prev_value,
                                  change=change,
                                  player_num=player_num)
-        '''event: player_(var_name)
+        '''event: player_(name)
+        config_section: player_vars
+        class_label: player_var
 
         desc: Posted when simpler types of player variables are added or
         change value.
@@ -234,9 +234,8 @@ class Player(object):
         """Return value of attribute or initialise it with 0 when it does not exist."""
         if name in self.vars:
             return self.vars[name]
-        else:
-            self.vars[name] = 0
-            return 0
+
+        return 0
 
     def __setattr__(self, name, value):
         """Set value and post event to inform about the change."""

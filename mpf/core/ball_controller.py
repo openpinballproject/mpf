@@ -1,7 +1,7 @@
 """Contains the BallController class which manages and tracks all the balls in a pinball machine."""
 
 import asyncio
-from typing import Generator, Union, Iterable
+from typing import Union, Iterable, Optional
 
 from mpf.devices.ball_device.ball_device import BallDevice
 
@@ -15,6 +15,10 @@ class BallController(MpfController):
 
     """Tracks and manages all the balls in a pinball machine."""
 
+    config_name = "ball_controller"
+
+    __slots__ = ["delay", "num_balls_known", "_add_new_balls_task", "_captured_balls"]
+
     def __init__(self, machine: MachineController) -> None:
         """Initialise ball controller.
 
@@ -25,7 +29,7 @@ class BallController(MpfController):
         """
         super().__init__(machine)
 
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
 
         self.num_balls_known = 0
 
@@ -40,14 +44,14 @@ class BallController(MpfController):
         self.machine.events.add_handler('shutdown',
                                         self._stop)
 
-        self._add_new_balls_task = None                                         # type: asyncio.Task
+        self._add_new_balls_task = None                                         # type: Optional[asyncio.Task]
         self._captured_balls = asyncio.Queue(loop=self.machine.clock.loop)      # type: asyncio.Queue
 
     def _init4(self, **kwargs):
         del kwargs
 
         # see if there are non-playfield devices
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device.is_playfield():
                 continue
             # found a device
@@ -57,7 +61,7 @@ class BallController(MpfController):
             return
 
         self._add_new_balls_task = self.machine.clock.loop.create_task(self._add_new_balls_to_playfield())
-        self._add_new_balls_task.add_done_callback(self._done)
+        self._add_new_balls_task.add_done_callback(Util.raise_exceptions)
 
     def _stop(self, **kwargs) -> None:
         del kwargs
@@ -65,36 +69,28 @@ class BallController(MpfController):
             self._add_new_balls_task.cancel()
             self._add_new_balls_task = None
 
-    @staticmethod
-    def _done(future: asyncio.Future) -> None:
-        try:
-            future.result()
-        except asyncio.CancelledError:
-            pass
-
     def _get_total_balls_in_devices(self) -> int:
         """Return the total ball count over all devices in the machine."""
         balls = 0
         # get count for all ball devices
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device.is_playfield():
                 continue
 
-            balls += device.counter.count_balls_sync()
+            balls += device.ball_count_handler.counter.count_balls_sync()
         return balls
 
     def add_captured_ball(self, source: BallDevice) -> None:
         """Inform ball controller about a capured ball (which might be new)."""
         self._captured_balls.put_nowait(source)
 
-    @asyncio.coroutine
-    def _add_new_balls_to_playfield(self) -> Generator[int, None, None]:
+    async def _add_new_balls_to_playfield(self) -> None:
         # initial count
-        self.num_balls_known = yield from self._count_all_balls_in_devices()
+        self.num_balls_known = await self._count_all_balls_in_devices()
 
         while True:
-            capture = yield from self._captured_balls.get()
-            balls = yield from self._count_all_balls_in_devices()
+            capture = await self._captured_balls.get()
+            balls = await self._count_all_balls_in_devices()
             if balls > self.num_balls_known:
                 self.num_balls_known += 1
                 capture.balls += 1
@@ -108,9 +104,9 @@ class BallController(MpfController):
 
     def _balance_playfields(self) -> None:
         # find negative counts
-        for playfield_target in self.machine.playfields:
+        for playfield_target in self.machine.playfields.values():
             if playfield_target.balls < 0:
-                for playfield_source in self.machine.playfields:
+                for playfield_source in self.machine.playfields.values():
                     if playfield_source.balls > 0:
                         playfield_source.balls -= 1
                         playfield_source.available_balls -= 1
@@ -120,22 +116,21 @@ class BallController(MpfController):
                         self.machine.events.post("playfield_jump", source=playfield_source, target=playfield_target)
                         break
 
-    @asyncio.coroutine
-    def _count_all_balls_in_devices(self) -> Generator[int, None, int]:
+    async def _count_all_balls_in_devices(self) -> int:
         """Count balls in all devices."""
         while True:
             # wait until all devices are stable
             # prepare futures in case we have to wait to prevent race between count and building futures
             futures = []
-            for device in self.machine.ball_devices:
+            for device in self.machine.ball_devices.values():
                 if not device.is_playfield():
-                    futures.append(Util.ensure_future(device.counter.wait_for_ball_activity(),
-                                                      loop=self.machine.clock.loop))
+                    futures.append(asyncio.ensure_future(device.ball_count_handler.counter.wait_for_ball_activity(),
+                                                         loop=self.machine.clock.loop))
 
             try:
                 return self._get_total_balls_in_devices()
             except ValueError:
-                yield from Util.first(futures, self.machine.clock.loop)
+                await Util.first(futures, self.machine.clock.loop)
                 continue
 
     def _count_balls(self) -> int:
@@ -143,7 +138,7 @@ class BallController(MpfController):
         self.debug_log("Counting Balls")
         balls = 0
 
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             # generally we do not count ball devices without switches
             if 'ball_switches' not in device.config:
                 continue
@@ -153,10 +148,10 @@ class BallController(MpfController):
             else:
                 for switch in device.config['ball_switches']:
                     if self.machine.switch_controller.is_active(
-                            switch.name, ms=device.config['entrance_count_delay']):
+                            switch, ms=device.config['entrance_count_delay']):
                         balls += 1
                     elif self.machine.switch_controller.is_inactive(
-                            switch.name, ms=device.config['exit_count_delay']):
+                            switch, ms=device.config['exit_count_delay']):
                         continue
                     else:
                         raise ValueError("switches not stable")
@@ -171,7 +166,7 @@ class BallController(MpfController):
         if not hasattr(self.machine, 'ball_devices'):
             return
 
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             prio = 0
             if 'drain' in device.tags or 'trough' in device.tags:  # device is used to drain balls from pf
                 prio += 1   # order handlers
@@ -181,11 +176,11 @@ class BallController(MpfController):
 
     def dump_ball_counts(self) -> None:
         """Dump ball count of all devices."""
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             self.info_log("%s contains %s balls. Tags %s", device.name, device.balls, device.tags)
 
     def request_to_start_game(self, **kwargs) -> bool:
-        """Method registered for the *request_to_start_game* event.
+        """Handle result of the *request_to_start_game* event.
 
         Checks to make sure that the balls are in all the right places and
         returns. If too many balls are missing (based on the config files 'Min
@@ -235,7 +230,7 @@ class BallController(MpfController):
                        " with '%s'", target)
 
         if isinstance(target, str):
-            target = Util.string_to_list(target)
+            target = Util.string_to_event_list(target)
 
         count = 0
         devices = set()
@@ -244,7 +239,7 @@ class BallController(MpfController):
             for device in self.machine.ball_devices.items_tagged(tag):
                 devices.add(device)
 
-        if len(devices) == 0:
+        if not devices:
             # didn't find any devices matching that tag, so we return True
             return True
 
@@ -256,14 +251,14 @@ class BallController(MpfController):
         if count == self.machine.ball_controller.num_balls_known:
             self.debug_log("Yes, all balls are collected")
             return True
-        else:
-            self.debug_log("No, all balls are not collected. Balls Counted: %s. "
-                           "Total balls known: %s", count,
-                           self.machine.ball_controller.num_balls_known)
-            return False
+
+        self.debug_log("No, all balls are not collected. Balls Counted: %s. "
+                       "Total balls known: %s", count,
+                       self.machine.ball_controller.num_balls_known)
+        return False
 
     def collect_balls(self, target='home, trough') -> None:
-        """Used to ensure that all balls are in contained in ball devices with the tag or list of tags you pass.
+        """Ensure that all balls are in contained in ball devices with the tag or list of tags you pass.
 
         Typically this would be used after a game ends, or when the machine is
         reset or first starts up, to ensure that all balls are in devices
@@ -275,7 +270,7 @@ class BallController(MpfController):
                 ['home', 'trough'].
 
         """
-        tag_list = Util.string_to_list(target)
+        tag_list = Util.string_to_event_list(target)
 
         self.debug_log("Collecting all balls to devices with tags '%s'",
                        tag_list)
@@ -288,7 +283,7 @@ class BallController(MpfController):
             for device in self.machine.ball_devices.items_tagged(tag):
                 target_devices.add(device)
 
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device not in target_devices:
                 if device.available_balls:
                     source_devices.add(device)

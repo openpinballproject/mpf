@@ -1,28 +1,32 @@
 environment:
 
   global:
-    MPF_VERSION: 0.30
+    MPF_VERSION: 0.53
 
   matrix:
-    - PYTHON: "C:\\Python34"
-    - PYTHON: "C:\\Python34-x64"
     - PYTHON: "C:\\Python35"
     - PYTHON: "C:\\Python35-x64"
+    - PYTHON: "C:\\Python36"
+    - PYTHON: "C:\\Python36-x64"
+    - PYTHON: "C:\\Python37"
+    - PYTHON: "C:\\Python37-x64"
+
 
   pypi_user:
-    secure: kxNKBuVMdOz6LjJPQb7PMQ==
+    secure: /UlFCFSXuqY1JAsOwKZdFg==
 
   pypi_password:
-    secure: nmmwU7UgFbrGUJwIr0Vo6cHzCuxlvW4vjg9TjkwrjmE=
+    secure: j1I2BPfJaYmFsQGsR8IWBQ==
 
 install:
   - "git submodule update --init --recursive"
-  - "%PYTHON%\\python.exe -m pip install -U setuptools wheel pip mock twine pypiwin32"
+  - "%PYTHON%\\python.exe -m pip install -U setuptools wheel pip mock twine"
+  - "%PYTHON%\\python.exe -m pip install -e ."
 
 build: off
 
 test_script:
- - "%PYTHON%\\python.exe setup.py test -q"
+ - "%PYTHON%\\python.exe -m unittest discover -s mpf.tests"
 
 after_test:
   - "%PYTHON%\\python.exe setup.py sdist --formats=gztar"

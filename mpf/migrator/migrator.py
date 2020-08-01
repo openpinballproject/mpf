@@ -8,14 +8,13 @@ import logging
 import importlib
 from copy import deepcopy
 
-from mpf.file_interfaces.yaml_roundtrip import YamlRoundtrip
 from ruamel import yaml
 from ruamel.yaml.comments import CommentedSeq, CommentedMap
 
+from mpf.file_interfaces.yaml_roundtrip import YamlRoundtrip
 from mpf._version import version
 from mpf.core.file_manager import FileManager
 from mpf.core.utility_functions import Util
-from mpf.core.config_validator import mpf_config_spec
 
 EXTENSION = '.yaml'
 BACKUP_FOLDER_NAME = 'previous_config_files'
@@ -24,7 +23,7 @@ REPROCESS_CURRENT_VERSION = False
 INDENTATION_SPACES = 4
 
 
-class Migrator(object):
+class Migrator:
 
     """Migrates a config."""
 
@@ -113,7 +112,7 @@ class Migrator(object):
         round2_files = list()
 
         for file in self.file_list:
-            file_content = FileManager.load(file, round_trip=True)
+            file_content = FileManager.load(file)
 
             if isinstance(file_content, CommentedMap):
                 migrated_content = self.migrator.migrate_file(file,
@@ -125,7 +124,7 @@ class Migrator(object):
                 round2_files.append(file)
 
         for file in round2_files:
-            file_content = FileManager.load(file, round_trip=True)
+            file_content = FileManager.load(file)
             migrated_content = self.migrator.migrate_file(file, file_content)
             if migrated_content:
                 self.num_show_files += 1
@@ -141,10 +140,10 @@ class Migrator(object):
     def save_file(self, file_name, file_contents):
         """Save file."""
         self.log.info("Writing file: %s", file_name)
-        FileManager.save(file_name, file_contents, include_comments=True)
+        FileManager.save(file_name, file_contents)
 
 
-class VersionMigrator(object):
+class VersionMigrator:
 
     """Parent class for a version-specific migrator.
 
@@ -170,15 +169,13 @@ class VersionMigrator(object):
             file_contents: ruamel.load(ed) contents of the file which includes
                 the comments.
 
-        Returns:
-            Modified file_contents instance with the migrations applied.
+        Returns a modified file_contents instance with the migrations applied.
         """
         self.log = logging.getLogger(os.path.basename(file_name))
         self.file_name = file_name
         self.base_name = os.path.basename(file_name).lower()
         self.fc = file_contents
         self.current_config_version = 0
-        self.mpf_config_spec = yaml.load(mpf_config_spec)
 
         if not self.initialized:
             self._initialize()
@@ -197,7 +194,7 @@ class VersionMigrator(object):
         cls.deprecations = yaml.load(cls.deprecations)
         try:
             for i, key in enumerate(cls.deprecations):
-                cls.deprecations[i] = list(key.split('|'))
+                cls.deprecations[i] = list(key.split('|'))  # pylint: disable-msg=unsupported-assignment-operation
         except TypeError:
             cls.deprecations = list()
 
@@ -221,7 +218,7 @@ class VersionMigrator(object):
             for i, move in enumerate(cls.moves):
                 move['old'] = move['old'].split('|')
                 move['new'] = move['new'].split('|')
-                cls.moves[i] = move
+                cls.moves[i] = move     # pylint: disable-msg=unsupported-assignment-operation
         else:
             cls.moves = dict()
 
@@ -234,13 +231,14 @@ class VersionMigrator(object):
                 return False
             self.log.debug("----------------------------------------")
             return self.fc
-        elif isinstance(self.fc, CommentedSeq):
+        if isinstance(self.fc, CommentedSeq):
             if self.is_show_file():
                 self._migrate_show_file()
                 self.log.debug("----------------------------------------")
                 return self.fc
 
         self.log.debug("Ignoring data file: %s. (Error is ok)", self.file_name)
+        return False
 
     # pylint: disable-msg=no-self-use
     def is_show_file(self):
@@ -270,30 +268,30 @@ class VersionMigrator(object):
         if not self.current_config_version:
             self.log.debug("Skipping non-config file: %s", self.file_name)
             return False
-        else:
-            if self.current_config_version == self.config_version:
-                if REPROCESS_CURRENT_VERSION:
-                    self.log.info('Reprocessing file which is already '
-                                  'config_version=%s', self.config_version)
-                    return True
-                else:
-                    self.log.info('File is already config_version=%s. '
-                                  'Skipping...', self.config_version)
-                    return False
-            else:  # config_version is less than current:
-                if self.config_version - self.current_config_version > 1:
-                    # use a different loader
-                    return True
-                elif self.config_version - self.current_config_version == 1:
-                    return True
-                else:
-                    self.log.warning('MPF version mismatch. File is '
-                                     'config_version=%s, but this version of'
-                                     'MPF is for config_version=%s. '
-                                     'Skipping...',
-                                     self.current_config_version,
-                                     self.config_version)
-                    return False
+
+        if self.current_config_version == self.config_version:
+            if REPROCESS_CURRENT_VERSION:
+                self.log.info('Reprocessing file which is already '
+                              'config_version=%s', self.config_version)
+                return True
+
+            self.log.info('File is already config_version=%s. '
+                          'Skipping...', self.config_version)
+            return False
+        # config_version is less than current:
+        if self.config_version - self.current_config_version > 1:
+            # use a different loader
+            return True
+        if self.config_version - self.current_config_version == 1:
+            return True
+
+        self.log.warning('MPF version mismatch. File is '
+                         'config_version=%s, but this version of'
+                         'MPF is for config_version=%s. '
+                         'Skipping...',
+                         self.current_config_version,
+                         self.config_version)
+        return False
 
     def _update_config_version(self):
         # Do a str.replace to preserve any spaces or comments in the header

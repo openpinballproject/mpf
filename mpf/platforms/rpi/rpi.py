@@ -1,17 +1,18 @@
 """Platform to control the hardware of a Raspberry Pi."""
 import asyncio
+
 from typing import Optional
 
+from mpf.platforms.interfaces.i2c_platform_interface import I2cPlatformInterface
+
 from mpf.core.delays import DelayManager
+from mpf.core.utility_functions import Util
 
 from mpf.platforms.interfaces.servo_platform_interface import ServoPlatformInterface
-
 from mpf.platforms.interfaces.switch_platform_interface import SwitchPlatformInterface
-
 from mpf.platforms.interfaces.driver_platform_interface import DriverPlatformInterface, PulseSettings, HoldSettings
-
 from mpf.core.platform import SwitchPlatform, DriverPlatform, ServoPlatform, SwitchSettings, \
-    DriverSettings, DriverConfig, SwitchConfig
+    DriverSettings, DriverConfig, SwitchConfig, I2cPlatform
 
 # apiogpio is not a requirement for MPF so we fail with a nice error when loading
 try:
@@ -24,7 +25,9 @@ class RpiSwitch(SwitchPlatformInterface):
 
     """A switch on a RPI."""
 
-    pass
+    def get_board_name(self):
+        """Return name."""
+        return "Raspberry Pi"
 
 
 class RpiDriver(DriverPlatformInterface):
@@ -36,7 +39,7 @@ class RpiDriver(DriverPlatformInterface):
         super().__init__(config, number)
         self.platform = platform            # type: RaspberryPiHardwarePlatform
         self.gpio = int(self.number)
-        self.delay = DelayManager(self.platform.machine.delayRegistry)
+        self.delay = DelayManager(self.platform.machine)
 
     def get_board_name(self):
         """Return name."""
@@ -85,11 +88,64 @@ class RpiServo(ServoPlatformInterface):
         position_translated = 1000 + position * 1000
         self.platform.send_command(self.platform.pi.set_servo_pulsewidth(self.gpio, position_translated))
 
+    def set_speed_limit(self, speed_limit):
+        """Not implemented."""
 
-class RaspberryPiHardwarePlatform(SwitchPlatform, DriverPlatform, ServoPlatform):
+    def set_acceleration_limit(self, acceleration_limit):
+        """Not implemented."""
+
+
+class RpiI2cDevice(I2cPlatformInterface):
+
+    """A I2c device on a Rpi."""
+
+    def __init__(self, number: str, loop, platform) -> None:
+        """Initialise i2c device on rpi."""
+        super().__init__(number)
+        self.loop = loop
+        self.pi = platform.pi
+        self.platform = platform
+        self.number = number
+        self.handle = None
+
+    async def open(self):
+        """Open I2c port."""
+        self.handle = await self._get_i2c_handle(self.number)
+
+    @staticmethod
+    def _get_i2c_bus_address(address):
+        """Split and return bus + address."""
+        if isinstance(address, int):
+            return 0, address
+        bus, address = address.split("-")
+        return int(bus), int(address)
+
+    async def _get_i2c_handle(self, address):
+        """Get or open handle for i2c device via pigpio."""
+        bus_address, device_address = self._get_i2c_bus_address(address)
+        handle = await self.pi.i2c_open(bus_address, device_address)
+        return handle
+
+    def i2c_write8(self, register, value):
+        """Write to i2c via pigpio."""
+        self.platform.send_command(self._i2c_write8_async(register, value))
+
+    async def _i2c_write8_async(self, register, value):
+        await self.pi.i2c_write_byte_data(self.handle, register, value)
+
+    async def i2c_read8(self, register):
+        """Read from i2c via pigpio."""
+        return await self.pi.i2c_read_byte_data(self.handle, register)
+
+    async def i2c_read_block(self, register, count):
+        """Read block via I2C."""
+        return await self.pi.i2c_read_i2c_block_data(self.handle, register, count)
+
+
+class RaspberryPiHardwarePlatform(SwitchPlatform, DriverPlatform, ServoPlatform, I2cPlatform):
 
     """Control the hardware of a Raspberry Pi.
-    
+
     Works locally and remotely via network.
     """
 
@@ -98,71 +154,62 @@ class RaspberryPiHardwarePlatform(SwitchPlatform, DriverPlatform, ServoPlatform)
         super().__init__(machine)
 
         if not apigpio:
-            raise AssertionError("To use the Raspberry Pi platform you need to install the apigpio extension.")
+            raise AssertionError("To use the Raspberry Pi platform you need to install the apigpio extension. "
+                                 "Run: pip3 install apigpio-mpf.")
 
         self.pi = None          # type: apigpio.Pi
-        self.config = None      # type: dict
+        # load config
+        self.config = self.machine.config_validator.validate_config("raspberry_pi", self.machine.config['raspberry_pi'])
         self._switches = None   # type: int
 
         self._cmd_queue = None  # type: asyncio.Queue
         self._cmd_task = None   # type: asyncio.Task
+        self._configure_device_logging_and_debug("Raspberry Pi", self.config)
 
-    def initialize(self):
+    async def initialize(self):
         """Initialise platform."""
-        # load config
-        self.config = self.machine.config_validator.validate_config("raspberry_pi", self.machine.config['raspberry_pi'])
-
         # create pi object and connect
         self.pi = apigpio.Pi(self.machine.clock.loop)
-        yield from self.pi.connect((self.config['ip'], self.config['port']))
+        await self.pi.connect((self.config['ip'], self.config['port']))
 
-        self._switches = yield from self.pi.read_bank_1()
+        self._switches = await self.pi.read_bank_1()
 
         self._cmd_queue = asyncio.Queue(loop=self.machine.clock.loop)
         self._cmd_task = self.machine.clock.loop.create_task(self._run())
-        self._cmd_task.add_done_callback(self._done)
+        self._cmd_task.add_done_callback(Util.raise_exceptions)
 
     def send_command(self, cmd):
         """Add a command to the command queue."""
         self._cmd_queue.put_nowait(cmd)
 
-    @asyncio.coroutine
-    def _run(self):
-        """Handles the command queue."""
+    async def _run(self):
+        """Handle the command queue."""
         while True:
             # get next command
-            cmd = yield from self._cmd_queue.get()
+            cmd = await self._cmd_queue.get()
             # run command
-            yield from cmd
+            await cmd
 
     def stop(self):
         """Stop platform."""
         if self._cmd_task:
             self._cmd_task.cancel()
+            self._cmd_task = None
 
-        self.machine.clock.loop.run_until_complete(self.pi.stop())
+        if self.pi:
+            self.machine.clock.loop.run_until_complete(self.pi.stop())
+            self.pi = None
 
-    @staticmethod
-    def _done(future):  # pragma: no cover
-        """Evaluate result of task.
-
-        Will raise exceptions from within task.
-        """
-        try:
-            future.result()
-        except asyncio.CancelledError:
-            pass
-
-    def configure_servo(self, number: str) -> ServoPlatformInterface:
+    async def configure_servo(self, number: str) -> ServoPlatformInterface:
         """Configure a servo."""
         return RpiServo(number, self)
 
-    def get_hw_switch_states(self):
+    async def get_hw_switch_states(self):
         """Return current switch states."""
         hw_states = dict()
         curr_bit = 1
         for index in range(32):
-            hw_states[str(index)] = (curr_bit & self._switches) == 0
+            hw_states[str(index)] = bool(curr_bit & self._switches)
             curr_bit <<= 1
         return hw_states
 
@@ -186,7 +233,7 @@ class RaspberryPiHardwarePlatform(SwitchPlatform, DriverPlatform, ServoPlatform)
         return RpiSwitch(config, number)
 
     def _switch_changed(self, gpio, level, tick):
-        """Callback for switch change."""
+        """Process switch change."""
         del tick
         self.machine.switch_controller.process_switch_by_num(str(gpio), level, self)
 
@@ -219,3 +266,9 @@ class RaspberryPiHardwarePlatform(SwitchPlatform, DriverPlatform, ServoPlatform)
         self.send_command(self.pi.set_mode(int(number), apigpio.OUTPUT))
 
         return RpiDriver(number, config, self)
+
+    async def configure_i2c(self, number: str):
+        """Configure I2c device."""
+        device = RpiI2cDevice(number, self.machine.clock.loop, self)
+        await device.open()
+        return device

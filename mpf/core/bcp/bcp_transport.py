@@ -1,32 +1,36 @@
 """Classes which manage BCP transports."""
-import asyncio
+from collections import defaultdict
 
 from typing import Union
 
 from mpf.core.bcp.bcp_client import BaseBcpClient
+from mpf.core.utility_functions import Util
+
+MYPY = False  # noqa
+if MYPY:
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
 
 
 class BcpTransportManager:
 
     """Manages BCP transports."""
 
+    __slots__ = ["_machine", "_transports", "_readers", "_handlers"]
+
     def __init__(self, machine):
         """Initialise BCP transport manager."""
-        self._machine = machine
+        self._machine = machine     # type: MachineController
         self._transports = []
         self._readers = {}
-        self._handlers = {}
+        self._handlers = defaultdict(set)
         self._machine.events.add_handler("shutdown", self.shutdown)
 
     def add_handler_to_transport(self, handler, transport: BaseBcpClient):
         """Register client as handler."""
-        if handler not in self._handlers:
-            self._handlers[handler] = []
-
         if transport is None:
             raise AssertionError("Cannot register None transport.")
 
-        self._handlers[handler].append(transport)
+        self._handlers[handler].add(transport)
 
     def remove_transport_from_handle(self, handler, transport: BaseBcpClient):
         """Remove client from a certain handler."""
@@ -43,29 +47,17 @@ class BcpTransportManager:
         del kwargs
         self._transports.append(transport)
         self._readers[transport] = self._machine.clock.loop.create_task(self._receive_loop(transport))
-        self._readers[transport].add_done_callback(self._done)
+        self._readers[transport].add_done_callback(Util.raise_exceptions)
 
-    @staticmethod
-    def _done(future):
-        """Evaluate result of task.
-
-        Will raise exceptions from within task.
-        """
-        try:
-            future.result()
-        except asyncio.CancelledError:
-            pass
-
-    @asyncio.coroutine
-    def _receive_loop(self, transport: BaseBcpClient):
+    async def _receive_loop(self, transport: BaseBcpClient):
         while True:
             try:
-                cmd, kwargs = yield from transport.read_message()
+                cmd, kwargs = await transport.read_message()
             except IOError:
                 self.unregister_transport(transport)
                 return
 
-            self._machine.bcp.interface.process_bcp_message(cmd, kwargs, transport)
+            await self._machine.bcp.interface.process_bcp_message(cmd, kwargs, transport)
 
     def unregister_transport(self, transport: BaseBcpClient):
         """Unregister client."""
@@ -82,7 +74,7 @@ class BcpTransportManager:
             del self._readers[transport]
 
         if transport.exit_on_close:
-            self._machine.stop()
+            self._machine.stop("BCP client {} disconnected and exit_on_close is set".format(transport.name))
 
     def get_all_clients(self):
         """Get a list of all clients."""
@@ -121,6 +113,6 @@ class BcpTransportManager:
     def shutdown(self, **kwargs):
         """Prepare the BCP clients for MPF shutdown."""
         del kwargs
-        for client in self._transports:
+        for client in list(self._transports):
             client.stop()
             self.unregister_transport(client)

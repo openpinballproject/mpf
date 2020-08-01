@@ -12,8 +12,7 @@ More info on the P-ROC hardware platform: http://pinballcontrollers.com/
 Original code source on which this module was based:
 https://github.com/preble/pyprocgame
 """
-
-import logging
+from typing import Dict
 
 from mpf.core.platform import DmdPlatform, DriverConfig, SwitchConfig, SegmentDisplayPlatform
 from mpf.platforms.interfaces.dmd_platform import DmdPlatformInterface
@@ -22,6 +21,10 @@ from mpf.platforms.p_roc_common import PDBConfig, PROCBasePlatform
 from mpf.core.utility_functions import Util
 from mpf.platforms.p_roc_devices import PROCDriver
 
+MYPY = False
+if MYPY:   # pragma: no cover
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
+
 
 class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform):
 
@@ -29,24 +32,33 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
 
     Args:
         machine: The MachineController instance.
-
-    Attributes:
-        machine: The MachineController instance.
     """
+
+    __slots__ = ["dmd", "alpha_display", "aux_port", "_use_extended_matrix",
+                 "_use_first_eight_direct_inputs"]
 
     def __init__(self, machine):
         """Initialise P-ROC."""
         super().__init__(machine)
-        self.log = logging.getLogger('P-ROC')
-        self.debug_log("Configuring P-ROC hardware")
-
         # validate config for p_roc
-        self.machine.config_validator.validate_config("p_roc", self.machine.config['p_roc'])
+        self.config = self.machine.config_validator.validate_config("p_roc", self.machine.config.get('p_roc', {}))
+        self._configure_device_logging_and_debug('P-Roc', self.config)
+
+        if self.config['driverboards']:
+            self.machine_type = self.pinproc.normalize_machine_type(self.config['driverboards'])
+        else:
+            self.machine_type = self.pinproc.normalize_machine_type(self.machine.config['hardware']['driverboards'])
 
         self.dmd = None
         self.alpha_display = None
+        self.aux_port = None
 
-        self.connect()
+        self._use_extended_matrix = False
+        self._use_first_eight_direct_inputs = False
+
+    async def connect(self):
+        """Connect to the P-Roc."""
+        await super().connect()
 
         self.aux_port = AuxPort(self)
         self.aux_port.reset()
@@ -58,14 +70,24 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
         # the collections.
         if self.machine_type == self.pinproc.MachineTypePDB:
             self.debug_log("Configuring P-ROC for PDBs (P-ROC driver boards)")
-            self.pdbconfig = PDBConfig(self.proc, self.machine.config, self.pinproc.DriverCount)
+            self.pdbconfig = PDBConfig(self, self.machine.config, self.pinproc.DriverCount)
 
         else:
             self.debug_log("Configuring P-ROC for OEM driver boards")
 
+    def _get_default_subtype(self):
+        """Return default subtype for P-Roc."""
+        return "matrix"
+
     def __repr__(self):
         """Return string representation."""
         return '<Platform.P-ROC>'
+
+    def get_info_string(self):
+        """Dump infos about boards."""
+        infos = "Firmware Version: {} Firmware Revision: {} Hardware Board ID: {}\n".format(
+            self.version, self.revision, self.hardware_version)
+        return infos
 
     def configure_driver(self, config: DriverConfig, number: str, platform_settings: dict):
         """Create a P-ROC driver.
@@ -75,10 +97,11 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
 
         Args:
             config: Dictionary of settings for the driver.
+            number: Number of this driver
+            platform_settings: Platform specific setting for this driver.
 
-        Returns:
-            A reference to the PROCDriver object which is the actual object you
-            can use to pulse(), patter(), enable(), etc.
+        Returns a reference to the PROCDriver object which is the actual object
+        you can use to pulse(), patter(), enable(), etc.
 
         """
         # todo need to add Aux Bus support
@@ -93,10 +116,12 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
             proc_num = self.pdbconfig.get_proc_coil_number(str(number))
             if proc_num == -1:
                 raise AssertionError("Driver {} cannot be controlled by the P-ROC. ".format(str(number)))
+            polarity = True
         else:
             proc_num = self.pinproc.decode(self.machine_type, str(number))
+            polarity = self.machine_type in (self.pinproc.MachineTypeSternWhitestar, self.pinproc.MachineTypeSternSAM)
 
-        return PROCDriver(proc_num, config, self, number)
+        return PROCDriver(proc_num, config, self, number, polarity)
 
     def configure_switch(self, number: str, config: SwitchConfig, platform_config: dict):
         """Configure a P-ROC switch.
@@ -104,11 +129,27 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
         Args:
             number: String number of the switch to configure.
             config: SwitchConfig settings.
+            platform_config: Platform specific settings.
 
         Returns: A configured switch object.
 
         """
         del platform_config
+        try:
+            if number.startswith("SD") and 0 <= int(number[2:]) <= 7:
+                self._use_first_eight_direct_inputs = True
+            _, y = number.split('/', 2)
+            if int(y) > 7:
+                self._use_extended_matrix = True
+        except ValueError:
+            pass
+
+        if self._use_extended_matrix and self._use_first_eight_direct_inputs:
+            raise AssertionError(
+                "P-Roc vannot use extended matrix and the first eight direct inputs at the same "
+                "time. Either only use SD8 to SD31 or only use matrix X/Y with Y <= 7. Offending "
+                "switch: {}".format(number))
+
         if self.machine_type == self.pinproc.MachineTypePDB:
             proc_num = self.pdbconfig.get_proc_switch_number(str(number))
             if proc_num == -1:
@@ -118,7 +159,7 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
             proc_num = self.pinproc.decode(self.machine_type, str(number))
         return self._configure_switch(config, proc_num)
 
-    def get_hw_switch_states(self):
+    async def get_hw_switch_states(self) -> Dict[str, bool]:
         """Read in and set the initial switch state.
 
         The P-ROC uses the following values for hw switch states:
@@ -127,23 +168,21 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
         3 - closed (not debounced)
         4 - open (not debounced)
         """
-        states = self.proc.switch_get_states()
+        states = await self.run_proc_cmd("switch_get_states")
 
         for switch, state in enumerate(states):
-            if state == 3 or state == 1:
-                states[switch] = 1
-            else:
-                states[switch] = 0
+            states[switch] = bool(state in (1, 3))
 
         return states
 
     def configure_dmd(self):
         """Configure a hardware DMD connected to a classic P-ROC."""
-        self.dmd = PROCDMD(self.pinproc, self.proc, self.machine)
+        self.dmd = PROCDMD(self, self.machine)
         return self.dmd
 
-    def configure_segment_display(self, number: str) -> "SegmentDisplayPlatformInterface":
+    async def configure_segment_display(self, number: str, platform_settings) -> "SegmentDisplayPlatformInterface":
         """Configure display."""
+        del platform_settings
         number_int = int(number)
         if 0 < number_int >= 4:
             raise AssertionError("Number must be between 0 and 3 for p_roc segment display.")
@@ -153,13 +192,9 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
 
         return PRocAlphanumericDisplay(self.alpha_display, number_int)
 
-    def tick(self):
-        """Check the P-ROC for any events (switch state changes or notification that a DMD frame was updated).
-
-        Also tickles the watchdog and flushes any queued commands to the P-ROC.
-        """
-        # Get P-ROC events (switches & DMD frames displayed)
-        for event in self.proc.get_events():
+    def process_events(self, events):
+        """Process events from the P-Roc."""
+        for event in events:
             event_type = event['type']
             event_value = event['value']
             if event_type == self.pinproc.EventTypeDMDFrameDisplayed:
@@ -180,37 +215,34 @@ class PRocHardwarePlatform(PROCBasePlatform, DmdPlatform, SegmentDisplayPlatform
                 self.log.warning("Received unrecognized event from the P-ROC. "
                                  "Type: %s, Value: %s", event_type, event_value)
 
-        self.proc.watchdog_tickle()
-        self.proc.flush()
-
 
 class PROCDMD(DmdPlatformInterface):
 
     """Parent class for a physical DMD attached to a P-ROC.
 
     Args:
-        proc: Reference to the MachineController's proc attribute.
+        platform: Reference to the MachineController's proc attribute.
         machine: Reference to the MachineController
-
-    Attributes:
-        dmd: Reference to the P-ROC's DMD buffer.
-
     """
 
-    def __init__(self, pinproc, proc, machine):
-        """Set up DMD."""
-        self.proc = proc
-        self.machine = machine
+    __slots__ = ["machine", "platform"]
 
-        # size is hardcoded here since 128x32 is all the P-ROC hw supports
-        self.dmd = pinproc.DMDBuffer(128, 32)
+    def __init__(self, platform, machine):
+        """Set up DMD."""
+        self.platform = platform        # type: PROCBasePlatform
+        self.machine = machine          # type: MachineController
 
         # dmd_timing defaults should be 250, 400, 180, 800
         if self.machine.config['p_roc']['dmd_timing_cycles']:
-            dmd_timing = Util.string_to_list(
+            dmd_timing = Util.string_to_event_list(
                 self.machine.config['p_roc']['dmd_timing_cycles'])
 
-            self.proc.dmd_update_config(high_cycles=dmd_timing)
+            self.platform.run_proc_cmd_no_wait("dmd_update_config", dmd_timing)
+
+    def set_brightness(self, brightness: float):
+        """Set brightness."""
+        # currently not supported. can be implemented using dmd_timing_cycles
+        assert brightness == 1.0
 
     def update(self, data):
         """Update the DMD with a new frame.
@@ -220,26 +252,31 @@ class PROCDMD(DmdPlatformInterface):
 
         """
         if len(data) == 4096:
-            self.dmd.set_data(data)
-            self.proc.dmd_draw(self.dmd)
+            self.platform.run_proc_cmd_no_wait("_dmd_send", data)
         else:
             self.machine.log.warning("Received DMD frame of length %s instead"
                                      "of 4096. Discarding...", len(data))
 
 
-class AuxPort(object):
+class AuxPort:
+
+    """Aux port on the P-Roc."""
+
+    __slots__ = ["platform", "_commands"]
 
     def __init__(self, platform):
+        """Initialise aux port."""
         self.platform = platform
         self._commands = []
 
     def reset(self):
+        """Reset aux port."""
         commands = [self.platform.pinproc.aux_command_disable()]
 
-        for j in range(1, 255):
+        for _ in range(1, 255):
             commands += [self.platform.pinproc.aux_command_jump(0)]
 
-        self.platform.proc.aux_send_commands(0, commands)
+        self.platform.run_proc_cmd_no_wait("aux_send_commands", 0, commands)
 
     def reserve_index(self):
         """Return index of next free command slot and reserve it."""
@@ -258,17 +295,20 @@ class AuxPort(object):
         # build command list
         for command_set in self._commands:
             commands += command_set
-        self.platform.proc.aux_send_commands(0, commands)
+            self.platform.run_proc_cmd_no_wait("aux_send_commands", 0, commands)
 
         # jump from slot 0 to slot 1. overwrites the disable
-        self.platform.proc.aux_send_commands(0, [self.platform.pinproc.aux_command_jump(1)])
+            self.platform.run_proc_cmd_no_wait("aux_send_commands", 0, [self.platform.pinproc.aux_command_jump(1)])
 
 
 class PRocAlphanumericDisplay(SegmentDisplayPlatformInterface):
 
     """Since AuxAlphanumericDisplay updates all four displays wrap it and set the correct offset."""
 
+    __slots__ = ["display"]
+
     def __init__(self, display, index):
+        """Initialise alpha numeric display."""
         super().__init__(index)
         self.display = display
 
@@ -278,7 +318,9 @@ class PRocAlphanumericDisplay(SegmentDisplayPlatformInterface):
         self.display.set_text(text, self.number)
 
 
-class AuxAlphanumericDisplay():
+class AuxAlphanumericDisplay:
+
+    """An alpha numeric display connected to the aux port on the P-Roc."""
 
     # Start at ASCII table offset 32: ' '
     asciiSegments = [0x0000,  # ' '
@@ -377,18 +419,20 @@ class AuxAlphanumericDisplay():
                      0x5500,  # 'x' Broken Letter x NOT CREATED YET
                      0x2500,  # 'y' Broken Letter y NOT CREATED YET
                      0x4409   # 'z' Broken Letter z NOT CREATED YET
-                    ]
+                     ]
 
-    strobes = [8,9,10,11,12]
-    full_intensity_delay = 350 # microseconds
-    inter_char_delay = 40 # microseconds
+    strobes = [8, 9, 10, 11, 12]
+    full_intensity_delay = 350  # microseconds
+    inter_char_delay = 40       # microseconds
+
+    __slots__ = ["platform", "aux_controller", "aux_index", "texts"]
 
     def __init__(self, platform, aux_controller):
-        """Initializes the animation."""
+        """Initialise the alphanumeric display."""
         self.platform = platform
         self.aux_controller = aux_controller
         self.aux_index = aux_controller.reserve_index()
-        self.texts = ["        "]*4
+        self.texts = ["        "] * 4
 
     def set_text(self, text, index):
         """Set text for display."""
@@ -400,53 +444,62 @@ class AuxAlphanumericDisplay():
         input_strings = [self.texts[0] + self.texts[1], self.texts[2] + self.texts[3]]
         self.display(input_strings)
 
-    def display(self, input_strings, intensities=[[1]*16]*2):
+    def display(self, input_strings, intensities=None):
         """Set display text."""
         strings = []
+
+        if intensities is None:
+            intensities = [[1] * 16] * 2
 
         # Make sure strings are at least 16 chars.
         # Then convert each string to a list of chars.
         for j in range(0, 2):
             input_strings[j] = input_strings[j]
-            if len(input_strings[j]) < 16: input_strings[j] += ' '*(16-len(input_strings[j]))
+            if len(input_strings[j]) < 16:
+                input_strings[j] += ' ' * (16 - len(input_strings[j]))
             strings += [list(input_strings[j])]
 
         # Make sure insensities are 1 or less
-        for i in range(0,16):
-            for j in range(0,2):
-                if intensities[j][i] > 1: intensities[j][i] = 1
+        for i in range(0, 16):
+            for j in range(0, 2):
+                if intensities[j][i] > 1:
+                    intensities[j][i] = 1
 
         commands = []
-        segs = []
         char_on_time = []
         char_off_time = []
 
         # Initialize a 2x16 array for segments value
-        segs = [[0] * 16 for i in range(2)]
+        segs = [[0] * 16 for _ in range(2)]
 
         # Loop through each character
-        for i in range(0,16):
+        for i in range(0, 16):
 
             # Activate the character position (this goes to both displayas)
-            commands += [self.platform.pinproc.aux_command_output_custom(i,0,self.strobes[0],False,0)]
+            commands += [self.platform.pinproc.aux_command_output_custom(i, 0, self.strobes[0], False, 0)]
 
-            for j in range(0,2):
-                segs[j][i] = self.asciiSegments[ord(strings[j][i])-32]
+            for j in range(0, 2):
+                segs[j][i] = self.asciiSegments[ord(strings[j][i]) - 32]
 
                 # Check for commas or periods.
                 # If found, squeeze comma into previous character.
                 # No point checking the last character (plus, this avoids an
                 # indexing error by not checking i+1 on the 16th char.
-                if (i<15):
-                    comma_dot = strings[j][i+1]
-                    if comma_dot == "," or comma_dot == ".":
-                        segs[j][i] |= self.asciiSegments[ord(comma_dot)-32]
+                if i < 15:
+                    comma_dot = strings[j][i + 1]
+                    if comma_dot in (".", ","):
+                        segs[j][i] |= self.asciiSegments[ord(comma_dot) - 32]
                         strings[j].remove(comma_dot)
                         # Append a space to ensure there are enough chars.
                         strings[j].append(' ')
-                                #character is 16 bits long, characters are loaded in 2 lots of 8 bits, for each display (4 enable lines total)
-                commands += [self.platform.pinproc.aux_command_output_custom(segs[j][i] & 0xff,0,self.strobes[j*2+1],False, 0)] #first 8 bits of characater data
-                commands += [self.platform.pinproc.aux_command_output_custom((segs[j][i]>> 8) & 0xff,0,self.strobes[j*2+2],False, 0)] #second 8 bits of characater data
+                # character is 16 bits long, characters are loaded in 2 lots of 8 bits,
+                # for each display (4 enable lines total)
+                commands += [self.platform.pinproc.aux_command_output_custom(
+                    segs[j][i] & 0xff, 0,
+                    self.strobes[j * 2 + 1], False, 0)]     # first 8 bits of characater data
+                commands += [self.platform.pinproc.aux_command_output_custom(
+                    (segs[j][i] >> 8) & 0xff, 0,
+                    self.strobes[j * 2 + 2], False, 0)]     # second 8 bits of characater data
 
                 char_on_time += [intensities[j][i] * self.full_intensity_delay]
                 char_off_time += [self.inter_char_delay + (self.full_intensity_delay - char_on_time[j])]
@@ -464,21 +517,21 @@ class AuxAlphanumericDisplay():
 
             # Not sure if the hardware will like a delay of 0
             # Use 2 to be extra safe.  2 microseconds won't affect display.
-            if between_delay == 0: between_delay = 2
+            if between_delay == 0:
+                between_delay = 2
 
             # Delay until it's time to turn off the character with the lowest intensity
             commands += [self.platform.pinproc.aux_command_delay(char_on_time[first])]
-            commands += [self.platform.pinproc.aux_command_output_custom(0,0,self.strobes[first*2+1],False,0)]
-            commands += [self.platform.pinproc.aux_command_output_custom(0,0,self.strobes[first*2+2],False,0)]
+            commands += [self.platform.pinproc.aux_command_output_custom(0, 0, self.strobes[first * 2 + 1], False, 0)]
+            commands += [self.platform.pinproc.aux_command_output_custom(0, 0, self.strobes[first * 2 + 2], False, 0)]
 
             # Delay until it's time to turn off the other character.
             commands += [self.platform.pinproc.aux_command_delay(between_delay)]
-            commands += [self.platform.pinproc.aux_command_output_custom(0,0,self.strobes[second*2+1],False,0)]
-            commands += [self.platform.pinproc.aux_command_output_custom(0,0,self.strobes[second*2+2],False,0)]
+            commands += [self.platform.pinproc.aux_command_output_custom(0, 0, self.strobes[second * 2 + 1], False, 0)]
+            commands += [self.platform.pinproc.aux_command_output_custom(0, 0, self.strobes[second * 2 + 2], False, 0)]
 
             # Delay for the inter-digit delay.
             commands += [self.platform.pinproc.aux_command_delay(char_off_time[second])]
 
         # Send the new list of commands to the Aux port controller.
         self.aux_controller.update(self.aux_index, commands)
-

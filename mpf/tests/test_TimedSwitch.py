@@ -3,11 +3,21 @@ from mpf.tests.MpfTestCase import MpfTestCase
 
 class TestTimedSwitch(MpfTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'timed_switches.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/timed_switches/'
+
+    def test_in_mode(self):
+        self.start_mode("mode1")
+        self.mock_event('mode_switch_active')
+        self.mock_event('mode_switch_released')
+
+        self.hit_switch_and_run("switch2", 1.1)
+        self.assertEventNotCalled("mode_switch_active")
+        self.advance_time_and_run()
+        self.assertEventCalled("mode_switch_active")
 
     def test_timed_switches(self):
 

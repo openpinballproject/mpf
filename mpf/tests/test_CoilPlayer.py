@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 class TestCoilPlayer(MpfTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'coil_player.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/coil_player/'
 
     def get_platform(self):
@@ -44,7 +44,7 @@ class TestCoilPlayer(MpfTestCase):
 
         self.post_event("event7")
         self.advance_time_and_run()
-        coil.hw_driver.enable.assert_called_with(PulseSettings(power=1.0, duration=10), HoldSettings(power=1.0))
+        coil.hw_driver.enable.assert_called_with(PulseSettings(power=1.0, duration=10), HoldSettings(power=0.5))
         assert not coil.hw_driver.disable.called
         assert not coil.hw_driver.pulse.called
         coil.hw_driver.pulse = MagicMock()
@@ -82,7 +82,7 @@ class TestCoilPlayer(MpfTestCase):
         coil.hw_driver.pulse.assert_called_with(PulseSettings(power=1.0, duration=10))
         assert not coil.hw_driver.enable.called
 
-        coil2.hw_driver.pulse.assert_called_with(PulseSettings(power=1.0, duration=10))
+        coil2.hw_driver.pulse.assert_called_with(PulseSettings(power=0.5, duration=10))
         assert not coil2.hw_driver.enable.called
 
         # post same event again
@@ -96,7 +96,7 @@ class TestCoilPlayer(MpfTestCase):
         coil.hw_driver.pulse.assert_called_with(PulseSettings(power=1.0, duration=10))
         assert not coil.hw_driver.enable.called
 
-        coil2.hw_driver.pulse.assert_called_with(PulseSettings(power=1.0, duration=10))
+        coil2.hw_driver.pulse.assert_called_with(PulseSettings(power=0.5, duration=10))
         assert not coil2.hw_driver.enable.called
 
     def test_pulse_with_attributes(self):
@@ -127,6 +127,22 @@ class TestCoilPlayer(MpfTestCase):
 
         coil.hw_driver.disable.assert_called_with()
 
+        # same again but use on and off instead of enable and disable
+        coil.hw_driver.enable = MagicMock()
+        coil.hw_driver.pulse = MagicMock()
+        coil.hw_driver.disable = MagicMock()
+
+        self.machine.events.post('event10')
+        self.advance_time_and_run()
+
+        coil.hw_driver.enable.assert_called_with(PulseSettings(power=1.0, duration=10), HoldSettings(power=1.0))
+        assert not coil.hw_driver.pulse.called
+
+        self.machine.events.post('event11')
+        self.advance_time_and_run()
+
+        coil.hw_driver.disable.assert_called_with()
+
     def test_coil_player_in_mode(self):
         coil = self.machine.coils['coil_3']
         coil.hw_driver.enable = MagicMock()
@@ -147,3 +163,15 @@ class TestCoilPlayer(MpfTestCase):
         self.post_event("stop_mode1", 1)
         self.assertFalse(coil.hw_driver.enable.called)
         coil.hw_driver.disable.assert_called_with()
+
+    def test_max_wait_ms(self):
+        coil = self.machine.coils['coil_1']
+        self.post_event("pulse_1_100")
+        self.advance_time_and_run(.05)
+        self.assertEqual("pulsed_100", coil.hw_driver.state)
+        self.post_event("pulse_1_50_max_wait_ms")
+        # still the same
+        self.assertEqual("pulsed_100", coil.hw_driver.state)
+        # after pulse end
+        self.advance_time_and_run(.06)
+        self.assertEqual("pulsed_50", coil.hw_driver.state)

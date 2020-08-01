@@ -1,12 +1,32 @@
 """Base class for config players which have multiple entries."""
 import abc
 
+from mpf.core.utility_functions import Util
+
 from mpf.core.config_player import ConfigPlayer
+from mpf.exceptions.config_file_error import ConfigFileError
 
 
 class DeviceConfigPlayer(ConfigPlayer, metaclass=abc.ABCMeta):
 
     """Base class for config players which have multiple entries."""
+
+    __slots__ = []
+
+    allow_placeholders_in_keys = False
+
+    def expand_config_entry(self, settings):
+        """Expend objects in config entry idempotently."""
+        expanded_config = dict()
+        for device, device_settings in settings.items():
+            device_settings = self._expand_device_config(device_settings)
+
+            devices = self._expand_device(device)
+
+            for this_device in devices:
+                expanded_config[this_device] = device_settings
+
+        return expanded_config
 
     def validate_config_entry(self, settings, name):
         """Validate one entry of this player."""
@@ -20,15 +40,20 @@ class DeviceConfigPlayer(ConfigPlayer, metaclass=abc.ABCMeta):
             else:
                 raise AssertionError(
                     "Invalid settings for player {}:{} {}".format(
-                        self.show_section, name, settings))
+                        name, self.show_section, settings))
 
         # settings here are dicts of devices/settings
         for device, device_settings in settings.items():
-            validated_config.update(
-                self._validate_config_item(device, device_settings))
+            try:
+                validated_config.update(
+                    self._validate_config_item(device, device_settings))
+            except ConfigFileError as e:
+                raise ConfigFileError("Failed to load config player {}:{} {}".format(
+                    name, self.show_section, settings), 1, self.log.name) from e
 
         return validated_config
 
+    # pylint: disable-msg=no-self-use
     def get_string_config(self, string):
         """Parse string config."""
         return {string: dict()}
@@ -48,33 +73,58 @@ class DeviceConfigPlayer(ConfigPlayer, metaclass=abc.ABCMeta):
             device_settings = device
 
         device_settings = self._parse_config(device_settings, device)
+        device_settings = self._expand_device_config(device_settings)
 
-        try:
-            if self.device_collection:
-                devices = self.device_collection.items_tagged(device)
-                if not devices:
-                    devices = [self.device_collection[device]]
-
-            else:
-                devices = [device]
-
-        except KeyError:
-            devices = [device]
+        devices = self._expand_device(device)
 
         return_dict = dict()
-        for device in devices:
-            return_dict[device] = device_settings
+        for this_device in devices:
+            return_dict[this_device] = device_settings
 
         return return_dict
 
+    def _expand_device(self, device):
+        """Idempotently expand device if it is a placeholder."""
+        if not isinstance(device, str):
+            return [device]
+
+        device_or_tag_names = Util.string_to_event_list(device)
+        if not self.device_collection:
+            return device_or_tag_names
+
+        device_list = []
+        for device_name in device_or_tag_names:
+            try:
+                devices = self.device_collection.items_tagged(device_name)
+                if not devices:
+                    device_list.append(self.device_collection[device_name])
+                else:
+                    device_list.extend(devices)
+
+            except KeyError:
+                if not self.__class__.allow_placeholders_in_keys or "(" not in device_name:
+                    # no placeholders
+                    return self.raise_config_error(
+                        "Could not find a {} device with name or tag {}, from list {}".format(
+                            self.device_collection.name, device_name, device_or_tag_names),
+                        1)
+
+                # placeholders may be evaluated later
+                device_list.append(device_name)
+        return device_list
+
+    def _expand_device_config(self, device_settings):
+        """Idempotently expand device config."""
+        return device_settings
+
     @abc.abstractmethod
-    def play(self, settings, context, calling_context, priority=0, **kwargs):
+    def play(self, settings, context: str, calling_context: str, priority: int = 0, **kwargs):
         """Directly play player."""
         # **kwargs since this is an event callback
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_express_config(self, value):
+    def get_express_config(self, value) -> dict:
         """Parse short config version.
 
         Implements "express" settings for this config_player which is what
@@ -94,9 +144,7 @@ class DeviceConfigPlayer(ConfigPlayer, metaclass=abc.ABCMeta):
         Args:
             value: The single line string value from a config file.
 
-        Returns:
-            A dictionary (which will then be passed through the config
-            validator)
-
+        Returns a dictionary (which will then be passed through the config
+        validator)
         """
         raise NotImplementedError(self.config_file_section)

@@ -2,7 +2,6 @@
 
 hardware:
     platform: opp
-    driverboards: gen2
 
 opp:
     ports: com1
@@ -22,6 +21,8 @@ switches:
         number: 0-3
     s_test_card2:
         number: 0-8
+    s_test_neo:
+        number: 1-0
 
 coils:
     c_test:
@@ -54,7 +55,8 @@ lights:
   test_led1:
     number: 1-0
   test_led2:
-    number: 1-1
+    previous: test_led1
+    type: rgb
 
 autofire_coils:
     ac_slingshot_test:
@@ -64,6 +66,11 @@ autofire_coils:
     ac_slingshot_test2:
         coil: c_test_allow_enable
         switch: s_test_no_debounce
+
+    ac_delayed_kickback:
+        coil: c_test
+        switch: s_test
+        coil_pulse_delay: 20
 
 flippers:
     f_test_single:

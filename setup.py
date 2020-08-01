@@ -1,23 +1,21 @@
 """Mission Pinball Framework (mpf) setup.py."""
-
 import re
-
 from setuptools import setup
 
 #  http://stackoverflow.com/questions/458550/standard-way-to-embed-version-into-python-package
 VERSIONFILE = "mpf/_version.py"
-verstrline = open(VERSIONFILE, "rt").read()
+VERSION_STRING_LONG = open(VERSIONFILE, "rt").read()
 VSRE = r"^__version__ = ['\"]([^'\"]*)['\"]"
-mo = re.search(VSRE, verstrline, re.M)
-if mo:
-    verstr = mo.group(1)
+_MO = re.search(VSRE, VERSION_STRING_LONG, re.M)
+if _MO:
+    VERSION_STRING = _MO.group(1)
 else:
     raise RuntimeError("Unable to find version string in %s." % (VERSIONFILE,))
 
 setup(
 
     name='mpf',
-    version=verstr,
+    version=VERSION_STRING,
     description='Mission Pinball Framework',
     long_description='''Let's build a pinball machine!
 
@@ -47,7 +45,10 @@ community.''',
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
         'Natural Language :: English',
         'Operating System :: MacOS :: MacOS X',
         'Operating System :: Microsoft :: Windows',
@@ -60,7 +61,6 @@ community.''',
     keywords='pinball',
 
     include_package_data=True,
-
     package_data={'': ['*.yaml', '*.png', '*.so', '*.pyd', '*.ogg', '*.wav']},
 
     # MANIFEST.in picks up the rest
@@ -68,12 +68,16 @@ community.''',
 
     zip_safe=False,
 
-    install_requires=['ruamel.yaml>=0.10,<0.11',
-                      'pyserial>=3.2.0',
-                      'pyserial-asyncio>=0.3',
-                      'typing',
-                      'asciimatics',
-                      'psutil'],
+    install_requires=['ruamel.yaml==0.15.100',
+                      'pyserial==3.4',
+                      'pyserial-asyncio==0.4',
+                      'sortedcontainers==2.1.0',
+                      'typing==3.7.4.1;python_version < "3.5"',
+                      'asciimatics==1.11.0',
+                      'terminaltables==3.1.0',
+                      'psutil==5.7.0',
+                      'prompt_toolkit',
+                      'pypiwin32==223;platform_system=="Windows"'],
 
     tests_require=[],
     test_suite="mpf.tests",

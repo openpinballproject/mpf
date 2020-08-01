@@ -20,7 +20,8 @@ class BananaPlayer(DeviceConfigPlayer):
         self.machine.bananas = dict()
         self.machine.banana_play_calls = list()
 
-    def play(self, settings, context, calling_context, key=None, priority=0, **kwargs):
+    def play(self, settings, context, calling_context, key=None, priority=0, start_time=None, **kwargs):
+        del start_time
         self.machine.banana_play_calls.append(PlayCall(
             settings, key, priority, kwargs))
 
@@ -36,10 +37,10 @@ class BananaPlayer(DeviceConfigPlayer):
 
 class TestConfigPlayers(MpfTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'test_config_players.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/config_players/'
 
     def setUp(self):
@@ -47,8 +48,7 @@ class TestConfigPlayers(MpfTestCase):
         self.machine_config_patches['mpf']['config_players']['banana'] = \
             'mpf.tests.test_ConfigPlayers.BananaPlayer'
 
-        self.add_to_config_validator('banana_player',
-                                     dict(__valid_in__='machine, mode'))
+        self.machine_spec_patches['banana_player'] = dict(__valid_in__='machine, mode')
 
         # Hack around globals in shows
         Show.next_id = 0
@@ -130,7 +130,7 @@ class TestConfigPlayers(MpfTestCase):
         # self.assertEqual(play_call.key, 'show1.1')
         self.assertEqual(play_call.kwargs, {'show_tokens': {}})  # todo
 
-        self.assertEqual(1, len(self.machine.show_controller.running_shows))
+        self.assertEqual(1, len(self.machine.show_player.instances['_global']['show_player']))
 
         # todo add tests for mode 1 show, make sure the mode is passed
         # todo make sure it stops when the mode ends, that banana clear is
@@ -138,7 +138,7 @@ class TestConfigPlayers(MpfTestCase):
         # is not running
 
     def test_empty_config_player_section(self):
-        self.machine.modes.mode2.start()
+        self.machine.modes["mode2"].start()
         self.advance_time_and_run()
-        self.machine.modes.mode2.stop()
+        self.machine.modes["mode2"].stop()
         self.advance_time_and_run()

@@ -1,5 +1,4 @@
 """Contains the base class for diverter devices."""
-
 from collections import deque
 
 from mpf.core.events import event_handler
@@ -17,6 +16,8 @@ class Diverter(SystemWideDevice):
     Args: Same as the Device parent class.
     """
 
+    __slots__ = ["delay", "active", "enabled", "diverting_ejects_count", "eject_state", "eject_attempt_queue"]
+
     config_section = 'diverters'
     collection = 'diverters'
     class_label = 'diverter'
@@ -25,7 +26,7 @@ class Diverter(SystemWideDevice):
         """Initialise diverter."""
         super().__init__(machine, name)
 
-        self.delay = DelayManager(machine.delayRegistry)
+        self.delay = DelayManager(machine)
 
         # Attributes
         self.active = False
@@ -35,7 +36,8 @@ class Diverter(SystemWideDevice):
         self.eject_state = False
         self.eject_attempt_queue = deque()
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         # register for feeder device eject events
         for feeder_device in self.config['feeder_devices']:
             self.machine.events.add_handler(
@@ -63,35 +65,44 @@ class Diverter(SystemWideDevice):
 
         if self.config['ball_search_order']:
             self.config['playfield'].ball_search.register(
-                self.config['ball_search_order'], self._ball_search, self.name)
+                self.config['ball_search_order'], self._ball_search, self.name,
+                restore_callback=self._ball_search_restore)
 
     def _register_switches(self, **kwargs):
         del kwargs
         # register for deactivation switches
         for switch in self.config['deactivation_switches']:
-            self.machine.switch_controller.add_switch_handler(
-                switch.name, self.deactivate)
+            self.machine.switch_controller.add_switch_handler_obj(
+                switch, self.deactivate)
 
         # register for disable switches:
         for switch in self.config['disable_switches']:
-            self.machine.switch_controller.add_switch_handler(
-                switch.name, self.disable)
+            self.machine.switch_controller.add_switch_handler_obj(
+                switch, self.disable)
 
     @event_handler(1)
-    def reset(self, **kwargs):
-        """Reset and deactivate the diverter."""
+    def event_reset(self, **kwargs):
+        """Handle reset control event."""
         del kwargs
+        self.reset()
+
+    def reset(self):
+        """Reset and deactivate the diverter."""
         self.deactivate()
 
     @event_handler(10)
-    def enable(self, auto=False, **kwargs):
+    def event_enable(self, auto=False, **kwargs):
+        """Handle enable control event."""
+        del kwargs
+        self.enable(auto)
+
+    def enable(self, auto=False):
         """Enable this diverter.
 
         Args:
             auto: Boolean value which is used to indicate whether this
-                diverter enabled itself automatically. This is passed to the
-                event which is posted.
-            **kwargs: unused
+                  diverter enabled itself automatically. This is passed to the
+                  event which is posted.
 
         If an 'activation_switches' is configured, then this method writes a
         hardware autofire rule to the pinball controller which fires the
@@ -100,7 +111,6 @@ class Diverter(SystemWideDevice):
         If no `activation_switches` is specified, then the diverter is activated
         immediately.
         """
-        del kwargs
         self.enabled = True
 
         self.machine.events.post('diverter_' + self.name + '_enabling',
@@ -119,11 +129,18 @@ class Diverter(SystemWideDevice):
 
         if self.config['activation_switches']:
             self._enable_switches()
+        elif self.config['activate_events']:
+            pass
         else:
             self.activate()
 
     @event_handler(0)
-    def disable(self, auto=False, **kwargs):
+    def event_disable(self, auto=False, **kwargs):
+        """Handle disable control event."""
+        del kwargs
+        self.disable(auto)
+
+    def disable(self, auto=False):
         """Disable this diverter.
 
         This method will remove the hardware rule if this diverter is activated
@@ -138,7 +155,6 @@ class Diverter(SystemWideDevice):
                 configuration file, so we don't know what event that might be
                 or whether it has random kwargs attached to it.
         """
-        del kwargs
         self.enabled = False
 
         self.machine.events.post('diverter_' + self.name + '_disabling',
@@ -163,10 +179,30 @@ class Diverter(SystemWideDevice):
            self.config['deactivate_events']):
             self.deactivate()
 
+    def _coil_activate(self):
+        """Activate the coil."""
+        if self.config['activation_coil']:
+            if self.config['type'] == 'pulse':
+                self.config['activation_coil'].pulse()
+            elif self.config['type'] == 'hold':
+                self.config['activation_coil'].enable()
+
+    def _coil_deactivate(self):
+        """Deactivate the coil."""
+        if self.config['activation_coil']:
+            self.config['activation_coil'].disable()
+
+        if self.config['deactivation_coil']:
+            self.config['deactivation_coil'].pulse()
+
     @event_handler(9)
-    def activate(self, **kwargs):
-        """Physically activate this diverter's coil."""
+    def event_activate(self, **kwargs):
+        """Handle activate control event."""
         del kwargs
+        self.activate()
+
+    def activate(self):
+        """Physically activate this diverter's coil."""
         self.debug_log("Activating Diverter")
         self.active = True
 
@@ -176,20 +212,21 @@ class Diverter(SystemWideDevice):
             it's physically pulsing or holding the coil to move.
 
         '''
-        if self.config['type'] == 'pulse':
-            self.config['activation_coil'].pulse()
-        elif self.config['type'] == 'hold':
-            self.config['activation_coil'].enable()
+        self._coil_activate()
         self.schedule_deactivation()
 
     @event_handler(2)
-    def deactivate(self, **kwargs):
+    def event_deactivate(self, **kwargs):
+        """Handle deactivate control event."""
+        del kwargs
+        self.deactivate()
+
+    def deactivate(self):
         """Deactivate this diverter.
 
         This method will disable the activation_coil, and (optionally) if it's
         configured with a deactivation coil, it will pulse it.
         """
-        del kwargs
         self.debug_log("Deactivating Diverter")
         self.active = False
 
@@ -201,10 +238,7 @@ class Diverter(SystemWideDevice):
         desc: The diverter called (name) is deativating itself.
 
         '''
-        self.config['activation_coil'].disable()
-
-        if self.config['deactivation_coil']:
-            self.config['deactivation_coil'].pulse()
+        self._coil_deactivate()
 
     def schedule_deactivation(self):
         """Schedule a delay to deactivate this diverter."""
@@ -218,8 +252,8 @@ class Diverter(SystemWideDevice):
                        self.config['activation_switches'])
 
         for switch in self.config['activation_switches']:
-            self.machine.switch_controller.add_switch_handler(
-                switch_name=switch.name, callback=self.activate)
+            self.machine.switch_controller.add_switch_handler_obj(
+                switch=switch, callback=self.activate)
 
     def _disable_switches(self):
         """Deregister switch handlers for activation switches."""
@@ -245,27 +279,15 @@ class Diverter(SystemWideDevice):
             self.diverting_ejects_count = 0
 
             # If there are ejects waiting for the other target switch diverter
-            if len(self.eject_attempt_queue) > 0:
-                if not self.eject_state:
-                    self.eject_state = True
-                    self.debug_log(
-                        "Enabling diverter since eject target is on the "
-                        "active target list")
-                    self.enable()
-                elif self.eject_state:
-                    self.eject_state = False
-                    self.debug_log(
-                        "Disabling diverter since eject target is on the "
-                        "inactive target list")
-                    self.disable()
+            if self.eject_attempt_queue:
                 # And perform those ejects
                 if self.config['allow_multiple_concurrent_ejects_to_same_side']:
-                    while len(self.eject_attempt_queue) > 0:
+                    while self.eject_attempt_queue:
                         self.diverting_ejects_count += 1
                         queue = self.eject_attempt_queue.pop()
                         queue.clear()
                 else:
-                    if len(self.eject_attempt_queue) > 0:
+                    if self.eject_attempt_queue:
                         self.diverting_ejects_count += 1
                         queue = self.eject_attempt_queue.pop()
                         queue.clear()
@@ -308,7 +330,7 @@ class Diverter(SystemWideDevice):
                 queue.wait()
                 self.eject_attempt_queue.append(queue)
                 return
-            elif not self.config['allow_multiple_concurrent_ejects_to_same_side']:
+            if not self.config['allow_multiple_concurrent_ejects_to_same_side']:
                 self.debug_log("More than one eject and allow_multiple_concurrent_ejects_to_same_side is false")
                 queue.wait()
                 self.eject_attempt_queue.append(queue)
@@ -334,15 +356,22 @@ class Diverter(SystemWideDevice):
                            "active target list")
             self.enable()
         elif not desired_state:
-            self.debug_log("Enabling diverter since eject target is on the "
+            self.debug_log("Disabling diverter since eject target is on the "
                            "inactive target list")
             self.disable()
 
     def _ball_search(self, phase, iteration):
         del phase
         del iteration
-        self.activate()
+        self._coil_activate()
         self.machine.delay.add(self.config['ball_search_hold_time'],
-                               self.deactivate,
+                               self._coil_deactivate,
                                'diverter_{}_ball_search'.format(self.name))
         return True
+
+    def _ball_search_restore(self):
+        """Restore state after ball search ended."""
+        if self.active:
+            self._coil_activate()
+        else:
+            self._coil_deactivate()

@@ -32,51 +32,58 @@ class MockApigpio():
             self.pull_ups = {}
             self.servos = {}
             self.outputs = {}
+            self.i2c_write = []
+            self.i2c_read = []
 
-        @asyncio.coroutine
-        def connect(self, address):
+        async def connect(self, address):
             pass
 
-        @asyncio.coroutine
-        def read_bank_1(self):
-            ## all switches read 1 which means they are open because of the pull-up
-            return 0xFF
+        async def read_bank_1(self):
+            ## only switch 1 is active
+            return 0x02
 
-        @asyncio.coroutine
-        def set_pull_up_down(self, gpio, pud):
+        async def set_pull_up_down(self, gpio, pud):
             self.pull_ups[gpio] = pud
 
-        @asyncio.coroutine
-        def set_mode(self, gpio, mode):
+        async def set_mode(self, gpio, mode):
             self.modes[gpio] = mode
 
-        @asyncio.coroutine
-        def add_callback(self, user_gpio, edge=0, func=None):
+        async def add_callback(self, user_gpio, edge=0, func=None):
             self.callbacks[user_gpio] = func
 
-        @asyncio.coroutine
-        def set_servo_pulsewidth(self, user_gpio, pulsewidth):
+        async def set_servo_pulsewidth(self, user_gpio, pulsewidth):
             self.servos[user_gpio] = pulsewidth
 
-        @asyncio.coroutine
-        def write(self, gpio, level):
+        async def write(self, gpio, level):
             self.outputs[gpio] = level
 
-        @asyncio.coroutine
-        def set_PWM_dutycycle(self, user_gpio, dutycycle):
+        async def set_PWM_dutycycle(self, user_gpio, dutycycle):
             self.outputs[user_gpio] = dutycycle / 255
 
-        @asyncio.coroutine
-        def stop(self):
+        async def stop(self):
             pass
+
+        async def i2c_open(self, bus, address):
+            return bus, address
+
+        async def i2c_close(self, handle):
+            return
+
+        async def i2c_write_byte_data(self, handle, register, data):
+            """Write byte to i2c register on handle."""
+            self.i2c_write.append((handle, register, data))
+
+        async def i2c_read_byte_data(self, handle, register):
+            """Write byte to i2c register on handle."""
+            return self.i2c_read.pop(0)
 
 
 class TestRpi(MpfTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/rpi/'
 
     def get_platform(self):
@@ -107,6 +114,12 @@ class TestRpi(MpfTestCase):
                          self.pi.pull_ups)
 
         # test switches
+        self.assertSwitchState("s_test", True)
+        self.assertSwitchState("s_test2", False)
+
+        self.pi.callbacks[1](gpio=1, level=0, tick=123)
+        self.machine_run()
+
         self.assertSwitchState("s_test", False)
         self.assertSwitchState("s_test2", False)
 
@@ -143,7 +156,7 @@ class TestRpi(MpfTestCase):
         self.machine.coils["c_test_allow_enable"].disable()
         self.machine_run()
         self.assertEqual(0, self.pi.outputs[30])
-        
+
         # enable with pwm (10ms pulse and 20% duty)
         self.machine.coils["c_pwm"].enable()
         self.machine_run()
@@ -163,3 +176,12 @@ class TestRpi(MpfTestCase):
         self.machine.servos["servo1"].go_to_position(1.0)
         self.machine_run()
         self.assertEqual(2000, self.pi.servos[10])
+
+        device = self.loop.run_until_complete(self.machine.default_platform.configure_i2c("0-123"))
+
+        device.i2c_write8(43, 1337)
+        self.machine_run()
+        self.assertEqual(((0, 123), 43, 1337), self.pi.i2c_write[0])
+        self.pi.i2c_read.append(1337)
+        result = self.loop.run_until_complete(device.i2c_read8(43))
+        self.assertEqual(1337, result)

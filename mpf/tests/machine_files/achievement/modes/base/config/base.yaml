@@ -105,15 +105,37 @@ achievements:
 
   achievement9: {}
 
-  achievement10: {}
+  achievement10:
+    debug: True
 
-  achievement11: {}
+  achievement11:
+    debug: True
 
   achievement12:
     enable_events: enable_achievements
 
   achievement13:
     enable_events: enable_achievements
+
+  achievement14: {}
+
+  achievement15: {}
+
+  achievement16: {}
+
+  achievement17: {}
+
+  mode1_a1:
+    enable_events: enable_all
+    start_events: start_all
+    stop_events: stop_all
+    complete_events: complete_all
+
+  mode1_a2:
+    enable_events: enable_all
+    start_events: start_all
+    stop_events: stop_all
+    complete_events: complete_all
 
 achievement_groups:
     group1:
@@ -142,11 +164,27 @@ achievement_groups:
 
     group3:
         achievements:
-          achievement10
-          achievement11
-          achievement12
-          achievement13
+          - achievement10
+          - achievement11
+          - achievement12
+          - achievement13
         auto_select: yes
+        debug: True
+
+    group4:
+        debug: True
+        achievements: achievement14, achievement15, achievement16
+        enable_events: group4_enable
+        disable_events: group4_disable
+        start_selected_events: group4_start
+        select_random_achievement_events: group4_random
+        rotate_right_events: group4_rotate_right
+        rotate_left_events: group4_rotate_left
+        events_when_all_completed: group4_complete
+        events_when_no_more_enabled: group4_no_more
+        events_when_enabled: group4_enabled
+        allow_selection_change_while_disabled: True
+        auto_select: True
 
 shows:
   group2_show:

@@ -16,6 +16,8 @@ class LightGroup(SystemWideDevice):
 
     """An abstract group of lights."""
 
+    __slots__ = ["lights"]
+
     def __init__(self, machine: MachineController, name) -> None:
         """Initialise light group."""
         super().__init__(machine, name)
@@ -29,8 +31,6 @@ class LightGroup(SystemWideDevice):
         Args:
             config: unparsed config
             is_mode_config: if in mode (not used)
-
-        Returns:
         """
         del is_mode_config
         if 'light_template' not in config:
@@ -41,18 +41,19 @@ class LightGroup(SystemWideDevice):
 
         return config
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self._create_lights()
 
         for light in self.lights:
-            light.device_added_system_wide()
+            await light.device_added_system_wide()
 
     def get_token(self):
         """Return all lights in group as token."""
         return {'lights': self.lights}
 
-    def _create_light_at_index(self, index, x, y):
-        light = Light(self.machine, self.name + "_light_" + str(index))
+    def _create_light_at_index(self, index, x, y, relative_index):
+        light = Light(self.machine, self.name + "_light_" + str(relative_index))
         tags = [self.name]
         tags.extend(self.config['tags'])
         light_config = copy.deepcopy(self.config['light_template'])
@@ -86,6 +87,8 @@ class LightStrip(LightGroup):
     collection = 'light_stripes'
     class_label = 'light_stripe'
 
+    __slots__ = []
+
     def _create_lights(self):
         distance = 0
         for index in range(self.config['number_start'], self.config['number_start'] + self.config['count']):
@@ -96,7 +99,8 @@ class LightStrip(LightGroup):
             else:
                 x = y = None
 
-            self._create_light_at_index(index, x, y)
+            relative_index = index - self.config['number_start']
+            self._create_light_at_index(index, x, y, relative_index)
 
 
 class LightRing(LightGroup):
@@ -106,6 +110,8 @@ class LightRing(LightGroup):
     config_section = 'light_rings'
     collection = 'light_rings'
     class_label = 'light_ring'
+
+    __slots__ = []
 
     def _create_lights(self):
         angle = self.config['start_angle'] / 180 * math.pi
@@ -117,4 +123,5 @@ class LightRing(LightGroup):
             else:
                 x = y = None
 
-            self._create_light_at_index(index, x, y)
+            relative_index = index - self.config['number_start']
+            self._create_light_at_index(index, x, y, relative_index)

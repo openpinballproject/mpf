@@ -9,19 +9,19 @@ import random
 
 from typing import List, Union, Tuple
 
-from mpf.core.case_insensitive_dict import CaseInsensitiveDict
 from mpf.core.utility_functions import Util
 
-channel_min_val = 0
-channel_max_val = 255
-rgb_min = (0, 0, 0)
-rgb_max = (255, 255, 255)
+CHANNEL_MIN_VAL = 0
+CHANNEL_MAX_VAL = 255
+RGB_MIN = (0, 0, 0)
+RGB_MAX = (255, 255, 255)
 
 # Standard web color names and values
-named_rgb_colors = CaseInsensitiveDict(
+NAMED_RGB_COLORS = dict(
     off=(0, 0, 0),
     aliceblue=(240, 248, 255),
     antiquewhite=(250, 235, 215),
+    aqua=(0, 255, 255),
     aquamarine=(127, 255, 212),
     azure=(240, 255, 255),
     beige=(245, 245, 220),
@@ -64,6 +64,7 @@ named_rgb_colors = CaseInsensitiveDict(
     firebrick=(178, 34, 34),
     floralwhite=(255, 250, 240),
     forestgreen=(34, 139, 34),
+    fuchsia=(255, 0, 255),
     gainsboro=(220, 220, 220),
     ghostwhite=(248, 248, 255),
     gold=(255, 215, 0),
@@ -162,11 +163,13 @@ named_rgb_colors = CaseInsensitiveDict(
 )
 
 
-class RGBColor(object):
+class RGBColor:
 
     """One RGB Color."""
 
-    def __init__(self, color: Union["RGBColor", str, List[int], Tuple[int, int, int]]=None) -> None:
+    __slots__ = ["_color"]
+
+    def __init__(self, color: Union["RGBColor", str, List[int], Tuple[int, int, int]] = None) -> None:
         """Initialise color."""
         if isinstance(color, RGBColor):
             self._color = color.rgb
@@ -175,7 +178,7 @@ class RGBColor(object):
         elif color:
             self._color = (color[0], color[1], color[2])
         else:
-            self._color = rgb_min
+            self._color = RGB_MIN
 
     def __eq__(self, other):
         """Return true if equal."""
@@ -198,9 +201,9 @@ class RGBColor(object):
                 "Unsupported operand type(s) for +: '{0}' and '{1}'".format(
                     type(self), type(other)))
 
-        return RGBColor((min(r1 + r2, channel_max_val),
-                         min(g1 + g2, channel_max_val),
-                         min(b1 + b2, channel_max_val)))
+        return RGBColor((min(r1 + r2, CHANNEL_MAX_VAL),
+                         min(g1 + g2, CHANNEL_MAX_VAL),
+                         min(b1 + b2, CHANNEL_MAX_VAL)))
 
     def __sub__(self, other):
         """Return difference of two RGB colors."""
@@ -215,9 +218,9 @@ class RGBColor(object):
                 "Unsupported operand type(s) for -: '{0}' and '{1}'".format(
                     type(self), type(other)))
 
-        return RGBColor((max(r1 - r2, channel_min_val),
-                         max(g1 - g2, channel_min_val),
-                         max(b1 - b2, channel_min_val)))
+        return RGBColor((max(r1 - r2, CHANNEL_MIN_VAL),
+                         max(g1 - g2, CHANNEL_MIN_VAL),
+                         max(b1 - b2, CHANNEL_MIN_VAL)))
 
     def __mul__(self, other):
         """Multiple color by scalar."""
@@ -230,9 +233,9 @@ class RGBColor(object):
             raise TypeError("Operand needs to be positive")
 
         r1, g1, b1 = self.rgb
-        return RGBColor((min(int(r1 * other), channel_max_val),
-                         min(int(g1 * other), channel_max_val),
-                         min(int(b1 * other), channel_max_val)))
+        return RGBColor((min(int(r1 * other), CHANNEL_MAX_VAL),
+                         min(int(g1 * other), CHANNEL_MAX_VAL),
+                         min(int(b1 * other), CHANNEL_MAX_VAL)))
 
     def __iter__(self):
         """Return iterator."""
@@ -244,52 +247,32 @@ class RGBColor(object):
 
     def __repr__(self):
         """Return general representation."""
-        return "<RGBColor {}>".format(self._color)
+        return "<RGBColor {} ({})>".format(self._color, self.name)
 
     @property
     def red(self):
         """Return the red component of the RGB color representation."""
         return self._color[0]
 
-    @red.setter
-    def red(self, value: int):
-        self._color = (value, self._color[1], self._color[2])
-
     @property
     def green(self) -> int:
         """Return the green component of the RGB color representation."""
         return self._color[1]
-
-    @green.setter
-    def green(self, value: int):
-        self._color = (self._color[0], value, self._color[2])
 
     @property
     def blue(self) -> int:
         """Return the blue component of the RGB color representation."""
         return self._color[2]
 
-    @blue.setter
-    def blue(self, value: int):
-        self._color = (self._color[0], self._color[1], value)
-
     @property
     def rgb(self) -> Tuple[int, int, int]:
         """Return an RGB representation of the color."""
         return self._color
 
-    @rgb.setter
-    def rgb(self, value: Tuple[int, int, int]):
-        self._color = value
-
     @property
     def hex(self) -> str:
         """Return a 6-char HEX representation of the color."""
         return RGBColor.rgb_to_hex(self.rgb)
-
-    @hex.setter
-    def hex(self, value: str):
-        self._color = RGBColor.hex_to_rgb(value)
 
     @property
     def name(self) -> str:
@@ -298,13 +281,10 @@ class RGBColor(object):
         Returns a string containing a standard color name or None
         if the current RGB color does not have a standard name.
         """
+        # pylint: disable-msg=consider-using-dict-comprehension
         return dict(
-            [(_v, _k) for _k, _v in list(named_rgb_colors.items())]).get(
+            [(_v, _k) for _k, _v in list(NAMED_RGB_COLORS.items())]).get(
             self._color)
-
-    @name.setter
-    def name(self, value: str):
-        self._color = RGBColor.name_to_rgb(value)
 
     @staticmethod
     def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
@@ -323,11 +303,11 @@ class RGBColor(object):
                                   hex(int(b))[2:].zfill(2))
 
     @staticmethod
-    def hex_to_rgb(_hex: str, default=None) -> Tuple[int, int, int]:
+    def hex_to_rgb(hex_string: str, default=None) -> Tuple[int, int, int]:
         """Convert a HEX color representation to an RGB color representation.
 
         Args:
-            _hex: The 3- or 6-char hexadecimal string representing the color
+            hex_string: The 3- or 6-char hexadecimal string representing the color
                 value.
             default: The default value to return if _hex is invalid.
 
@@ -335,15 +315,15 @@ class RGBColor(object):
             with each item being an integer 0-255.
 
         """
-        if not Util.is_hex_string(_hex):
+        if not Util.is_hex_string(hex_string):
             return default
 
-        _hex = str(_hex).strip('#')
+        hex_string = str(hex_string).strip('#')
 
-        n = len(_hex) // 3
-        r = int(_hex[:n], 16)
-        g = int(_hex[n:2 * n], 16)
-        b = int(_hex[2 * n:3 * n], 16)
+        n = len(hex_string) // 3
+        r = int(hex_string[:n], 16)
+        g = int(hex_string[n:2 * n], 16)
+        b = int(hex_string[2 * n:3 * n], 16)
         return r, g, b
 
     @staticmethod
@@ -384,7 +364,7 @@ class RGBColor(object):
             0, 255)
 
     @staticmethod
-    def name_to_rgb(name: str, default=rgb_min) -> Tuple[int, int, int]:
+    def name_to_rgb(name: str, default=RGB_MIN) -> Tuple[int, int, int]:
         """Convert a standard color name to an RGB value (tuple).
 
         If the name is not found, the default value is returned.
@@ -393,10 +373,10 @@ class RGBColor(object):
         :return: RGB representation of the named color.
         :rtype: tuple
         """
-        return named_rgb_colors.get(name, default)
+        return NAMED_RGB_COLORS.get(name.lower(), default)
 
     @staticmethod
-    def string_to_rgb(value: str, default=rgb_min) -> Tuple[int, int, int]:
+    def string_to_rgb(value: str, default=RGB_MIN) -> Tuple[int, int, int]:
         """Convert a string which could be either a standard color name or a hex value to an RGB value (tuple).
 
         If the name is not found and the supplied value is not a
@@ -414,18 +394,24 @@ class RGBColor(object):
         if '%' in value:
             value, brightness = value.split("%")
 
-        rgb = named_rgb_colors.get(value)
+        rgb = NAMED_RGB_COLORS.get(value)
+        if rgb is None:
+            # we do not want to call lower every time since this code path is very hot
+            # instead we just add the upper case string to the color hash map so next time we will hit the fast path
+            rgb = NAMED_RGB_COLORS.get(value.lower())
+            if rgb:
+                NAMED_RGB_COLORS[value.lower()] = rgb
         if rgb is None:
             rgb = RGBColor.hex_to_rgb(value)
             if rgb is None:
-                raise AssertionError("Invalid RGB string: {}".format(value))
+                raise ColorException("Invalid RGB string: {}".format(value))
 
         # apply brightness
         if brightness:
             factor = float(int(brightness) / 100)
-            rgb = (min(int(rgb[0] * factor), channel_max_val),
-                   min(int(rgb[1] * factor), channel_max_val),
-                   min(int(rgb[2] * factor), channel_max_val))
+            rgb = (min(int(rgb[0] * factor), CHANNEL_MAX_VAL),
+                   min(int(rgb[1] * factor), CHANNEL_MAX_VAL),
+                   min(int(rgb[2] * factor), CHANNEL_MAX_VAL))
 
         return rgb
 
@@ -447,21 +433,19 @@ class RGBColor(object):
                 a dictionart of red, green, blue key/value pairs.
 
         """
-        named_rgb_colors[str(name)] = RGBColor(color).rgb
+        NAMED_RGB_COLORS[str(name.lower())] = RGBColor(color).rgb
 
 
-class ColorException(Exception):
+class ColorException(AssertionError):
 
     """General exception thrown for color utilities non-exit exceptions."""
 
-    pass
 
-
-class RGBColorCorrectionProfile(object):
+class RGBColorCorrectionProfile:
 
     """Encapsulates a named RGB color correction profile and its associated lookup tables."""
 
-    def __init__(self, name: str=None) -> None:
+    def __init__(self, name: str = None) -> None:
         """Create a linear correction profile that does not alter color values by default.
 
         Args:
@@ -541,8 +525,7 @@ class RGBColorCorrectionProfile(object):
     def name(self) -> str:
         """Return the color correction profile name.
 
-        Returns:
-            str
+        Returns str name of color.
         """
         return self._name
 

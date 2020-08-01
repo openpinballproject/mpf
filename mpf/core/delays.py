@@ -1,37 +1,15 @@
-"""Contains the DelayManager and DelayManagerRegistry base classes."""
+"""Contains the DelayManager base classes."""
 
 import uuid
 from functools import partial
-
-from typing import Any, Callable, Dict, Set
-
+from typing import Any, Callable, Dict, Tuple, Union
 from mpf.core.mpf_controller import MpfController
 
 MYPY = False
-if MYPY:   # pragma: no cover
-    from mpf.core.machine import MachineController
+if MYPY:    # pragma: no cover
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
 
-__api__ = ['DelayManager', 'DelayManagerRegistry']
-
-
-class DelayManagerRegistry(object):
-
-    """Keeps references to all DelayManager instances."""
-
-    def __init__(self, machine: "MachineController") -> None:
-        """Initialise delay registry."""
-        self.delay_managers = set()     # type: Set["DelayManager"]
-        self.machine = machine
-
-    def add_delay_manager(self, delay_manager: "DelayManager") -> None:
-        """Add a delay manager to the list.
-
-        Args:
-            delay_manager: The :class:`DelayManager` instance you're adding to
-                this registry.
-
-        """
-        self.delay_managers.add(delay_manager)
+__api__ = ['DelayManager']
 
 
 class DelayManager(MpfController):
@@ -47,14 +25,16 @@ class DelayManager(MpfController):
 
     """
 
-    def __init__(self, registry: DelayManagerRegistry) -> None:
-        """Initialise delay manager."""
-        self.delays = {}        # type: Dict[str, Any]
-        super().__init__(registry.machine)
-        self.registry = registry
-        self.registry.add_delay_manager(self)
+    __slots__ = ["delays", "registry"]
 
-    def add(self, ms: int, callback: Callable[..., None], name: str=None,
+    config_name = "delay_manager"
+
+    def __init__(self, machine: "MachineController") -> None:
+        """Initialise delay manager."""
+        self.delays = {}        # type: Dict[str, Tuple[Any, Callable]]
+        super().__init__(machine)
+
+    def add(self, ms: int, callback: Callable[..., None], name: str = None,
             **kwargs) -> str:
         """Add a delay.
 
@@ -68,22 +48,24 @@ class DelayManager(MpfController):
             **kwargs: Any other (optional) kwarg pairs you pass will be
                 passed along as kwargs to the callback method.
 
-        Returns:
-            String name or UUID4 of the delay which you can use to remove it
-            later.
+        Returns string name or UUID4 of the delay which you can use to remove it
+        later.
         """
         if not name:
             name = str(uuid.uuid4())
         self.debug_log("Adding delay. Name: '%s' ms: %s, callback: %s, "
                        "kwargs: %s", name, ms, callback, kwargs)
 
-        if name in self.delays:
-            self.machine.clock.unschedule(self.delays[name])
-            del self.delays[name]
+        try:
+            delay = self.delays.pop(name)
+        except KeyError:
+            pass
+        else:
+            self.machine.clock.unschedule(delay[0])
 
-        self.delays[name] = self.machine.clock.schedule_once(
+        self.delays[name] = (self.machine.clock.schedule_once(
             partial(self._process_delay_callback, name, callback, **kwargs),
-            ms / 1000.0)
+            ms / 1000.0), callback)
 
         return name
 
@@ -98,12 +80,12 @@ class DelayManager(MpfController):
                 delay with this name, that's ok. Nothing happens.
         """
         self.debug_log("Removing delay: '%s'", name)
-        if name in self.delays:
-            self.machine.clock.unschedule(self.delays[name])
-            try:
-                del self.delays[name]
-            except KeyError:
-                pass
+        try:
+            delay = self.delays.pop(name)
+        except KeyError:
+            pass
+        else:
+            self.machine.clock.unschedule(delay[0])
 
     def add_if_doesnt_exist(self, ms: int, callback: Callable[..., None],
                             name: str, **kwargs) -> str:
@@ -119,13 +101,12 @@ class DelayManager(MpfController):
             **kwargs: Any other (optional) kwarg pairs you pass will be
                 passed along as kwargs to the callback method.
 
-        Returns:
-            String name of the delay which you can use to remove it later.
+        Returns string name of the delay which you can use to remove it later.
         """
         if not self.check(name):
             return self.add(ms, callback, name, **kwargs)
-        else:
-            return name
+
+        return name
 
     def check(self, delay: str) -> bool:
         """Check to see if a delay exists.
@@ -133,12 +114,11 @@ class DelayManager(MpfController):
         Args:
             delay: A string of the delay you're checking for.
 
-        Returns:
-            True if the delay exists. False otherwise.
+        Returns true if the delay exists. False otherwise.
         """
         return delay in self.delays
 
-    def reset(self, ms: int, callback: Callable[..., None], name: str,
+    def reset(self, ms: int, callback: Callable[..., None], name: Union[str, uuid.UUID],
               **kwargs) -> str:
         """Reset a delay.
 
@@ -157,9 +137,8 @@ class DelayManager(MpfController):
             **kwargs: Any other (optional) kwarg pairs you pass will be
                 passed along as kwargs to the callback method.
 
-        Returns:
-            String name or UUID4 of the delay which you can use to remove it
-            later.
+        Returns string name or UUID4 of the delay which you can use to remove it
+        later.
         """
         if name in self.delays:
             self.remove(name)
@@ -169,7 +148,7 @@ class DelayManager(MpfController):
     def clear(self) -> None:
         """Remove (clear) all the delays associated with this DelayManager."""
         for name in list(self.delays.keys()):
-            self.machine.clock.unschedule(self.delays[name])
+            self.machine.clock.unschedule(self.delays[name][0])
             self.remove(name)
 
         self.delays = {}
@@ -188,8 +167,7 @@ class DelayManager(MpfController):
                 # have to save the callback ref first, since if the callback
                 # schedules a new delay with the same name, then the removal
                 # will remove it
-                # pylint: disable-msg=protected-access
-                cb = self.delays[name]._callback
+                cb = self.delays[name][1]
                 self.remove(name)
                 cb()
             except KeyError:

@@ -35,10 +35,10 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
         self._queue_callback_kwargs = dict()
         self._queue_callback_called = 0
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'test_event_manager.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/event_manager/'
 
     def event_handler1(self, *args, **kwargs):
@@ -131,6 +131,19 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
         self.advance_time_and_run(1)
 
         self.assertEqual(1, self._handler1_called)
+        self.assertEqual(tuple(), self._handler1_args)
+        self.assertEqual(dict(), self._handler1_kwargs)
+
+    def test_event_double_register(self):
+        # tests that a handler responds to a regular event post
+        self.machine.events.add_handler('test_event', self.event_handler1)
+        self.machine.events.add_handler('test_event', self.event_handler1)
+        self.advance_time_and_run(1)
+
+        self.machine.events.post('test_event')
+        self.advance_time_and_run(1)
+
+        self.assertEqual(2, self._handler1_called)
         self.assertEqual(tuple(), self._handler1_args)
         self.assertEqual(dict(), self._handler1_kwargs)
 
@@ -763,7 +776,7 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
         self.machine.events.add_handler('event2', self.event2_cb)
         self.machine.events.add_handler('event3', self.event3_cb)
         self.correct = False
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
 
         self.machine.events.post("event1")
         self.advance_time_and_run(1)
@@ -782,7 +795,7 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
 
     def test_delay_order(self):
         self.called = False
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
 
         self.delay.add(ms=6001, name="second", callback=self.delay_second)
         self.delay.add(ms=6000, name="first", callback=self.delay_first)
@@ -797,7 +810,7 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
 
     def test_zero_ms_delay(self):
         self.called = False
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
 
         self.delay.add(ms=0, name="first", callback=self.delay_zero_ms, start=self.machine.clock.get_time())
         self.advance_time_and_run(10)
@@ -886,3 +899,16 @@ class TestEventManager(MpfFakeGameTestCase, MpfTestCase):
 
         self.assertEventNotCalled("out3")
         self.assertEventCalled("out4")
+
+    def test_broken_handlers(self):
+        # unbalanced placeholder
+        with self.assertRaises(ValueError):
+            self.machine.events.add_handler("event_name{machine.variables.test", self._handler)
+
+        # unbalanced the other side
+        with self.assertRaises(ValueError):
+            self.machine.events.add_handler("event_namemachine.variables.test}", self._handler)
+
+        # invalid space
+        with self.assertRaises(ValueError):
+            self.machine.events.add_handler("event_name {machine.variables.test}", self._handler)

@@ -3,10 +3,10 @@ from mpf.tests.MpfGameTestCase import MpfGameTestCase
 
 class TestExtraBall(MpfGameTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/extra_ball/'
 
     def get_platform(self):
@@ -18,17 +18,21 @@ class TestExtraBall(MpfGameTestCase):
         self.mock_event('extra_ball_eb1_awarded')
         self.mock_event('extra_ball_award_disabled')
         self.mock_event('extra_ball_eb1_award_disabled')
+        self.mock_event("first_ball")
 
         self.fill_troughs()
         self.start_game()
+
+        self.assertEventCalled("first_ball")
+        self.mock_event("first_ball")
 
         # start mode
         self.post_event("start_mode1")
 
         # mode loaded. eb1 should be enabled
-        self.assertTrue(self.machine.extra_balls.eb1)
-        self.assertTrue(self.machine.extra_balls.eb1.player)
-        self.assertTrue(self.machine.extra_balls.eb1.enabled)
+        self.assertTrue(self.machine.extra_balls["eb1"])
+        self.assertTrue(self.machine.extra_balls["eb1"].player)
+        self.assertTrue(self.machine.extra_balls["eb1"].enabled)
         self.assertEqual(1, self.machine.game.player.number)
         self.assertEqual(0, self.machine.game.player.extra_ball_eb1_awarded)
         self.assertEqual(0, self.machine.game.player.extra_balls)
@@ -41,14 +45,14 @@ class TestExtraBall(MpfGameTestCase):
         self.assertEqual(1, self.machine.game.player.number)
         self.assertEqual(0, self.machine.game.player.extra_ball_eb1_awarded)
         self.assertEqual(0, self.machine.game.player.extra_balls)
-        self.assertFalse(self.machine.extra_balls.eb1.player)
+        self.assertFalse(self.machine.extra_balls["eb1"].player)
 
         # start mode (again)
         self.post_event("start_mode1")
 
-        self.assertTrue(self.machine.extra_balls.eb1)
-        self.assertTrue(self.machine.extra_balls.eb1.player)
-        self.assertTrue(self.machine.extra_balls.eb1.enabled)
+        self.assertTrue(self.machine.extra_balls["eb1"])
+        self.assertTrue(self.machine.extra_balls["eb1"].player)
+        self.assertTrue(self.machine.extra_balls["eb1"].enabled)
         self.assertEqual(1, self.machine.game.player.number)
         self.assertEqual(0, self.machine.game.player.extra_ball_eb1_awarded)
         self.assertEqual(0, self.machine.game.player.extra_balls)
@@ -65,7 +69,7 @@ class TestExtraBall(MpfGameTestCase):
         self.assertEventNotCalled('extra_ball_eb1_award_disabled')
 
         # but only once
-        self.assertFalse(self.machine.extra_balls.eb1.enabled)
+        self.assertFalse(self.machine.extra_balls["eb1"].enabled)
         self.mock_event('extra_ball_awarded')
         self.mock_event('extra_ball_eb1_awarded')
         self.mock_event('extra_ball_award_disabled')
@@ -82,9 +86,10 @@ class TestExtraBall(MpfGameTestCase):
 
         # drain and start new ball, but should still be ball 1 since the player
         # has an EB
-        self.drain_ball()
+        self.drain_all_balls()
         self.advance_time_and_run()
         self.assertEqual(1, self.machine.game.player.number)
+        self.assertEventNotCalled("first_ball")
 
         # EB disabled events should be posted
         self.mock_event('extra_ball_awarded')
@@ -113,9 +118,9 @@ class TestExtraBall(MpfGameTestCase):
         self.post_event("start_mode1")
 
         # mode loaded. eb3 should not be enabled
-        self.assertTrue(self.machine.extra_balls.eb3)
-        self.assertTrue(self.machine.extra_balls.eb3.player)
-        self.assertFalse(self.machine.extra_balls.eb3.enabled)
+        self.assertTrue(self.machine.extra_balls["eb3"])
+        self.assertTrue(self.machine.extra_balls["eb3"].player)
+        self.assertFalse(self.machine.extra_balls["eb3"].enabled)
         self.assertEqual(1, self.machine.game.player.number)
         self.assertEqual(0, self.machine.game.player.extra_ball_eb2_awarded)
         self.assertEqual(0, self.machine.game.player.extra_balls)
@@ -163,22 +168,19 @@ class TestExtraBall(MpfGameTestCase):
         self.start_two_player_game()
         self.post_event('start_mode1')
 
-        self.assertEqual(self.machine.extra_balls.eb5.group,
-                         self.machine.extra_ball_groups.main)
-        self.assertEqual(self.machine.extra_balls.eb6.group,
-                         self.machine.extra_ball_groups.main)
+        self.assertEqual(self.machine.extra_balls["eb5"].group,
+                         self.machine.extra_ball_groups["main"])
+        self.assertEqual(self.machine.extra_balls["eb6"].group,
+                         self.machine.extra_ball_groups["main"])
 
         # award a group EB, even though none are lit
         self.mock_event('extra_ball_group_main_awarded')
 
         self.post_event('award_group_eb')
         self.assertEqual(1, self.machine.game.player.extra_balls)
-        self.assertEqual(
-            0, self.machine.game.player.extra_ball_group_main_num_lit)
-        self.assertEqual(1,
-             self.machine.game.player.extra_ball_group_main_num_awarded_game)
-        self.assertEqual(1,
-             self.machine.game.player.extra_ball_group_main_num_awarded_ball)
+        self.assertEqual(0, self.machine.game.player.extra_ball_group_main_num_lit)
+        self.assertEqual(1, self.machine.game.player.extra_ball_group_main_num_awarded_game)
+        self.assertEqual(1, self.machine.game.player.extra_ball_group_main_num_awarded_ball)
         self.assertEventCalled('extra_ball_group_main_awarded')
 
         # light single EB, make sure it works and the group vars update
@@ -190,12 +192,9 @@ class TestExtraBall(MpfGameTestCase):
         self.assertEventCalled('extra_ball_group_main_lit')
         self.assertEventCalled('extra_ball_group_main_lit_awarded')
         self.assertEqual(1, self.machine.game.player.extra_balls)
-        self.assertEqual(1,
-            self.machine.game.player.extra_ball_group_main_num_lit)
-        self.assertEqual(1,
-             self.machine.game.player.extra_ball_group_main_num_awarded_game)
-        self.assertEqual(1,
-             self.machine.game.player.extra_ball_group_main_num_awarded_ball)
+        self.assertEqual(1, self.machine.game.player.extra_ball_group_main_num_lit)
+        self.assertEqual(1, self.machine.game.player.extra_ball_group_main_num_awarded_game)
+        self.assertEqual(1, self.machine.game.player.extra_ball_group_main_num_awarded_ball)
 
         # light another EB, but max lit for the group is 1, so it should not
         # light, and we should get the disabled event
@@ -222,7 +221,7 @@ class TestExtraBall(MpfGameTestCase):
         self.mock_event('extra_ball_group_main_lit')
         self.mock_event('extra_ball_group_main_lit_awarded')
 
-        self.drain_ball()
+        self.drain_all_balls()
         self.advance_time_and_run()
         self.assertEqual(1, self.machine.game.player.number)
         self.assertEventCalled('extra_ball_group_main_lit')
@@ -259,7 +258,7 @@ class TestExtraBall(MpfGameTestCase):
         self.mock_event('extra_ball_group_main_lit')
         self.mock_event('extra_ball_group_main_lit_awarded')
 
-        self.drain_ball()
+        self.drain_all_balls()
         self.advance_time_and_run()
         self.assertEventCalled('extra_ball_group_main_lit')
         self.assertEventNotCalled('extra_ball_group_main_lit_awarded')
@@ -292,7 +291,7 @@ class TestExtraBall(MpfGameTestCase):
              self.machine.game.player.extra_ball_group_main_num_awarded_ball)
 
         # drain and make sure we get to player 2
-        self.drain_ball()
+        self.drain_all_balls()
         self.advance_time_and_run()
         self.assertEqual(2, self.machine.game.player.number)
 
@@ -349,7 +348,7 @@ class TestExtraBall(MpfGameTestCase):
         # drain and move to next ball, EB should be unlit
         self.mock_event('extra_ball_group_no_memory_lit')
         self.mock_event('extra_ball_group_no_memory_lit_awarded')
-        self.drain_ball()
+        self.drain_all_balls()
         self.advance_time_and_run()
         self.assertEqual(2, self.machine.game.player.ball)
         self.assertEqual(0,

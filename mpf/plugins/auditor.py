@@ -1,20 +1,21 @@
 """MPF plugin for an auditor which records switch events, high scores, shots, etc."""
 
 import logging
-from typing import Any
-from typing import Set
 
 from mpf.core.switch_controller import MonitoredSwitchChange
 from mpf.devices.shot import Shot
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.core.machine import MachineController
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
+    from typing import Any, Set     # pylint: disable-msg=cyclic-import,unused-import
 
 
-class Auditor(object):
+class Auditor:
 
     """Writes switch events, regular events, and player variables to an audit log file."""
+
+    __slots__ = ["log", "machine", "switchnames_to_audit", "config", "current_audits", "enabled", "data_manager"]
 
     def __init__(self, machine: "MachineController") -> None:
         """Initialise auditor.
@@ -73,13 +74,13 @@ class Auditor(object):
             self.current_audits['player'] = dict()
 
         # Make sure we have all the switches in our audit dict
-        for switch in self.machine.switches:
+        for switch in self.machine.switches.values():
             if (switch.name not in self.current_audits['switches'] and
                     'no_audit' not in switch.tags):
                 self.current_audits['switches'][switch.name] = 0
 
         # build the list of switches we should audit
-        self.switchnames_to_audit = {x.name for x in self.machine.switches
+        self.switchnames_to_audit = {x.name for x in self.machine.switches.values()
                                      if 'no_audit' not in x.tags}
 
         # Make sure we have all the player stuff in our audit dict
@@ -108,10 +109,10 @@ class Auditor(object):
             if not isinstance(audits, dict):
                 continue
             for name, value in audits.items():
-                self.machine.set_machine_var("audits_{}_{}".format(category, name), value)
+                self.machine.variables.set_machine_var("audits_{}_{}".format(category, name), value)
 
     def audit(self, audit_class, event, **kwargs):
-        """Called to log an auditable event.
+        """Log an auditable event.
 
         Args:
             audit_class: A string of the section we want this event to be
@@ -129,7 +130,9 @@ class Auditor(object):
             self.current_audits[audit_class][event] = 0
 
         self.current_audits[audit_class][event] += 1
-        self.machine.set_machine_var("audits_{}_{}".format(audit_class, event), self.current_audits[audit_class][event])
+        self.machine.variables.set_machine_var("audits_{}_{}".format(audit_class, event),
+                                               self.current_audits[audit_class][event])
+        self._save_audits()
 
     def audit_switch(self, change: MonitoredSwitchChange):
         """Record switch change."""
@@ -143,7 +146,7 @@ class Auditor(object):
         self.audit('shots', name)
 
     def audit_event(self, eventname, **kwargs):
-        """Registered as an event handlers to log an event to the audit log.
+        """Record this event in the audit log.
 
         Args:
             eventname: The string name of the event.
@@ -153,9 +156,10 @@ class Auditor(object):
         del kwargs
 
         self.current_audits['events'][eventname] += 1
+        self._save_audits()
 
     def audit_player(self, **kwargs):
-        """Called to write player data to the audit log.
+        """Write player data to the audit log.
 
         Typically this is only called at the end of a game.
 
@@ -164,6 +168,9 @@ class Auditor(object):
                 kwargs.
         """
         del kwargs
+        if not self.machine.game or not self.machine.game.player_list:
+            return
+
         for item in self.config['player']:
             for player in self.machine.game.player_list:
 
@@ -180,6 +187,7 @@ class Auditor(object):
                     (self.current_audits['player'][item]['total'] + 1))
 
                 self.current_audits['player'][item]['total'] += 1
+        self._save_audits()
 
     @classmethod
     def _merge_into_top_list(cls, new_item, current_list, num_items):
@@ -219,12 +227,7 @@ class Auditor(object):
                 if event not in self.current_audits['events']:
                     self.current_audits['events'][event] = 0
 
-        for event in self.config['save_events']:
-            self.machine.events.add_handler(event, self._save_audits,
-                                            priority=0)
-
-    def _save_audits(self, **kwargs):
-        del kwargs
+    def _save_audits(self):
         self.data_manager.save_all(data=self.current_audits)
 
     def disable(self, **kwargs):
@@ -235,6 +238,3 @@ class Auditor(object):
 
         # remove switch and event handlers
         self.machine.events.remove_handler(self.audit_event)
-        self.machine.events.remove_handler(self._save_audits)
-
-plugin_class = Auditor

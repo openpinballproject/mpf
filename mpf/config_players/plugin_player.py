@@ -9,10 +9,13 @@ class PluginPlayer(DeviceConfigPlayer):
     This class is created on the MPF side of things.
     """
 
+    __slots__ = ["bcp_client", "_show_keys"]
+
     def __init__(self, machine):
         """Initialise plugin player."""
         super().__init__(machine)
         self.bcp_client = None
+        self._show_keys = {}
 
     def __repr__(self):
         """Return str representation."""
@@ -46,39 +49,40 @@ class PluginPlayer(DeviceConfigPlayer):
         config_player events to send the trigger via BCP instead of calling
         the local play() method.
         """
-        event_list = list()
+        events = super().register_player_events(config, mode, priority)
         # when bcp is disabled do not register plugin_player
         if not self.machine.options['bcp']:
-            return event_list
+            return events
 
         self.bcp_client = self._get_bcp_client(config)
-
-        for event in config:
-            event_name, _ = self.machine.events.get_event_and_condition_from_string(event)
-            self.machine.bcp.interface.add_registered_trigger_event_for_client(
-                self.bcp_client, event_name)
-            event_list.append(event_name)
 
         self.machine.bcp.interface.add_registered_trigger_event_for_client(
             self.bcp_client, '{}_play'.format(self.show_section))
         self.machine.bcp.interface.add_registered_trigger_event_for_client(
             self.bcp_client, '{}_clear'.format(self.show_section))
 
-        return event_list
+        return events
 
-    def unload_player_events(self, event_list):
-        """Unload player events via BCP."""
-        intfc = self.machine.bcp.interface
-        for event in event_list:
-            intfc.remove_registered_trigger_event_for_client(self.bcp_client,
-                                                             event)
+    # pylint: disable-msg=too-many-arguments
+    def show_play_callback(self, settings, priority, calling_context, show_tokens, context, start_time):
+        """Register BCP events."""
+        config = {'bcp_connection': settings['bcp_connection']} if 'bcp_connection' in settings else {}
+        event_keys = self.register_player_events(config, None, priority)
+        self._show_keys[context + self.config_file_section] = event_keys
+        super().show_play_callback(settings, priority, calling_context, show_tokens, context, start_time)
+
+    def show_stop_callback(self, context):
+        """Remove BCP events."""
+        self.unload_player_events(self._show_keys[context + self.config_file_section])
+        del self._show_keys[context + self.config_file_section]
+        super().show_stop_callback(context)
 
     def play(self, settings, context, calling_context, priority=0, **kwargs):
         """Trigger remote player via BCP."""
         self.machine.bcp.interface.bcp_trigger(
             name='{}_play'.format(self.show_section),
-            settings=settings, context=context,
-            priority=priority)
+            settings=settings, context=context, calling_context=calling_context,
+            priority=priority, **kwargs)
 
     def clear_context(self, context):
         """Clear the context at remote player via BCP."""

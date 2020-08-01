@@ -4,10 +4,10 @@ from mpf.tests.MpfTestCase import MpfTestCase
 
 class TestQueueEventPlayer(MpfTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'test_queue_event_player.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/event_players/'
 
     def _queue1(self, queue, **kwargs):
@@ -51,12 +51,12 @@ class TestQueueEventPlayer(MpfTestCase):
         self.mock_event("relay2_start")
 
         # post queue event
-        self.machine.events.post_queue("relay", callback=self._cb)
+        self.machine.events.post_queue("relay", callback=self._cb, something=7)
         self.advance_time_and_run()
 
         # should run the first relay only
         self.assertFalse(self._done)
-        self.assertEventCalled("relay_start")
+        self.assertEventCalledWith("relay_start")
         self.assertEventNotCalled("relay2_start")
 
         # first relay done. should trigger the second
@@ -70,9 +70,28 @@ class TestQueueEventPlayer(MpfTestCase):
         self.advance_time_and_run()
         self.assertTrue(self._done)
 
+    def test_queue_relay_player_with_pass_args(self):
+        self._done = False
+        self.mock_event("relay_with_args_start")
+
+        # post queue event
+        self.machine.events.post_queue("relay_with_args", callback=self._cb, test=42)
+        self.advance_time_and_run()
+
+        # should run the first relay only
+        self.assertFalse(self._done)
+        self.assertEventCalledWith("relay_with_args_start", test=42)
+
+        # relay done
+        self.post_event("relay_with_args_done")
+        self.advance_time_and_run()
+        self.assertTrue(self._done)
+
     def test_broken_queue_relay_player(self):
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(Exception) as e:
             self.post_event("relay")
+        self.assertIsInstance(e.exception.__cause__, AssertionError)
+        self.assertEqual(str(e.exception.__cause__), "Can only use queue relay player with queue event.")
 
         # reset exception
         self._exception = None
@@ -81,7 +100,7 @@ class TestQueueEventPlayer(MpfTestCase):
         self._done = False
         self.mock_event("relay3_start")
 
-        self.machine.modes.mode1.start()
+        self.machine.modes["mode1"].start()
 
         # post queue event
         self.machine.events.post_queue("relay3", callback=self._cb)
@@ -97,12 +116,12 @@ class TestQueueEventPlayer(MpfTestCase):
         self.assertTrue(self._done)
 
         # stop and start mode again
-        self.machine.modes.mode1.stop()
+        self.machine.modes["mode1"].stop()
         self.advance_time_and_run()
 
         self._done = False
         self.mock_event("relay3_start")
-        self.machine.modes.mode1.start()
+        self.machine.modes["mode1"].start()
 
         # post queue event
         self.machine.events.post_queue("relay3", callback=self._cb)
@@ -116,3 +135,20 @@ class TestQueueEventPlayer(MpfTestCase):
         self.post_event("relay3_done")
         self.advance_time_and_run()
         self.assertTrue(self._done)
+
+        # post queue event again
+        self._done = False
+        self.machine.events.post_queue("relay3", callback=self._cb)
+        self.advance_time_and_run()
+        self.assertFalse(self._done)
+
+        # stop mode
+        self.machine.modes["mode1"].stop()
+        self.advance_time_and_run()
+
+        # should trigger cb without waiting for event
+        self.assertTrue(self._done)
+
+        # relay should not crash it
+        self.post_event("relay3_done")
+        self.advance_time_and_run()

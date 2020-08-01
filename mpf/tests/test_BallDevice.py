@@ -11,22 +11,31 @@ class TestBallDevice(MpfTestCase):
         self._requesting = 0
         self._queue = False
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'test_ball_device.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/ball_device/'
 
     def _missing_ball(self, **kwargs):
         del kwargs
         self._missing += 1
 
+    def test_placeholder(self):
+        template = self.machine.placeholder_manager.build_int_template(
+            "device.ball_devices.test_launcher.balls", None)
+        value, future = template.evaluate_and_subscribe([])
+        self.assertEqual(0, value)
+        self.assertFalse(future.done())
+        self.hit_switch_and_run("s_ball_switch_launcher", 1)
+        self.assertTrue(future.done())
+
     def test_ball_count_during_eject(self):
         coil2 = self.machine.coils['eject_coil2']
         device2 = self.machine.ball_devices['test_launcher']
         coil2.pulse = MagicMock()
 
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
 
         self._missing = 0
@@ -97,7 +106,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler(
             'balldevice_test_launcher_ball_request', self._requesting_ball)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
@@ -133,7 +142,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler(
             'balldevice_test_launcher_ball_request', self._requesting_ball)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
@@ -172,6 +181,52 @@ class TestBallDevice(MpfTestCase):
         self.assertEqual(0, self._missing)
         self.assertEqual(1, self._captured)
 
+    def test_eject_retry(self):
+        self.hit_switch_and_run("s_ball_switch1", 1)
+        self.hit_switch_and_run("s_ball_switch2", 1)
+        self.assertAvailableBallsOnPlayfield(0)
+
+        coil2 = self.machine.coils['eject_coil2'].hw_driver
+
+        self.mock_event('balldevice_test_launcher_ball_request')
+        self.mock_event('balldevice_ball_missing')
+        self.mock_event('balldevice_captured_from_playfield')
+
+        # launcher should eject
+        self.hit_switch_and_run("s_ball_switch_launcher", 1)
+        self.assertEqual("pulsed_10", coil2.state)
+        coil2.state = None
+        self.assertEventCalled('balldevice_captured_from_playfield')
+        self.mock_event('balldevice_captured_from_playfield')
+
+        # it leaves the switch
+        self.release_switch_and_run("s_ball_switch_launcher", 1)
+        self.assertEqual(None, coil2.state)
+
+        # it comes back (before timeout)
+        self.hit_switch_and_run("s_ball_switch_launcher", 1)
+        self.assertEqual(None, coil2.state)
+
+        # retry after timeout
+        self.advance_time_and_run(5)
+        self.assertEqual("pulsed_10", coil2.state)
+        coil2.state = None
+
+        # ball leaves launcher
+        self.release_switch_and_run("s_ball_switch_launcher", 1)
+        self.advance_time_and_run(1)
+
+        # arrives at target
+        self.hit_switch_and_run("s_ball_switch_target1", 1)
+
+        self.assertEqual(None, coil2.state)
+
+        self.assertEventNotCalled('balldevice_captured_from_playfield')
+        self.assertEventNotCalled('balldevice_ball_missing')
+        self.assertEventNotCalled('balldevice_test_launcher_ball_request')
+        self.assertAvailableBallsOnPlayfield(1)
+        self.assertBallsOnPlayfield(0)
+
     def test_ball_eject_timeout_and_ball_missing(self):
         self._requesting = 0
         coil2 = self.machine.coils['eject_coil2']
@@ -186,7 +241,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler(
             'balldevice_test_launcher_ball_request', self._requesting_ball)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
@@ -375,7 +430,7 @@ class TestBallDevice(MpfTestCase):
                                         self._ball_enter)
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._enter = -1
         self._captured = 0
@@ -460,7 +515,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -594,7 +649,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -734,6 +789,89 @@ class TestBallDevice(MpfTestCase):
         # check that timeout behave well
         self.advance_time_and_run(300)
 
+    def test_temporary_missing_ball_idle(self):
+        coil1 = self.machine.coils['eject_coil1']
+        device1 = self.machine.ball_devices['test_trough']
+        playfield = self.machine.ball_devices['playfield']
+
+        self.machine.events.add_handler('balldevice_captured_from_playfield',
+                                        self._captured_from_pf)
+        self.machine.events.add_handler('balldevice_ball_missing',
+                                        self._missing_ball)
+        self._captured = 0
+        self._missing = 0
+
+        # add two initial balls to trough
+        self.machine.switch_controller.process_switch("s_ball_switch1", 1)
+        self.machine.switch_controller.process_switch("s_ball_switch2", 1)
+        self.advance_time_and_run(1)
+        self.assertEqual(2, self._captured)
+        self._captured = 0
+        self.assertEqual(2, self.machine.ball_controller.num_balls_known)
+
+        self.assertEqual(0, playfield.balls)
+
+        # it should keep the balls
+        coil1.pulse = MagicMock()
+        self.assertEqual(2, device1.balls)
+        self.assertEqual(2, device1.available_balls)
+
+        # steal a ball from trough (only for a while)
+        self.machine.switch_controller.process_switch("s_ball_switch1", 0)
+        self.advance_time_and_run(3)
+        assert not coil1.pulse.called
+        self.assertEqual(0, self._missing)
+        self.assertEqual(0, self._captured)
+        self.assertEqual(0, playfield.balls)
+        self.assertEqual(0, playfield.available_balls)
+
+        # still waiting
+        self.assertEqual(2, device1.balls)
+        self.assertEqual(2, device1.available_balls)
+
+        # put it back
+        self.machine.switch_controller.process_switch("s_ball_switch1", 1)
+        self.advance_time_and_run(1)
+        assert not coil1.pulse.called
+        self.assertEqual(0, self._missing)
+        self.assertEqual(0, self._captured)
+        self.assertEqual(0, playfield.balls)
+        self.assertEqual(0, playfield.available_balls)
+
+        # count should be back
+        self.assertEqual(2, device1.balls)
+        self.assertEqual(2, device1.available_balls)
+
+        self.assertEqual(2, self.machine.ball_controller.num_balls_known)
+
+        # steal a ball from trough
+        self.machine.switch_controller.process_switch("s_ball_switch1", 0)
+        self.advance_time_and_run(6)
+        assert not coil1.pulse.called
+        self.assertEqual(1, self._missing)
+        self.assertEqual(0, self._captured)
+        self.assertEqual(1, playfield.balls)
+        self.assertEqual(1, playfield.available_balls)
+
+        # count should be on less and one ball missing
+        self.assertEqual(1, device1.balls)
+        self.assertEqual(1, device1.available_balls)
+
+        # put it back
+        self.machine.switch_controller.process_switch("s_ball_switch1", 1)
+        self.advance_time_and_run(1)
+        assert not coil1.pulse.called
+        self.assertEqual(1, self._missing)
+        self.assertEqual(1, self._captured)
+        self.assertEqual(0, playfield.balls)
+        self.assertEqual(0, playfield.available_balls)
+
+        # count should be back
+        self.assertEqual(2, device1.balls)
+        self.assertEqual(2, device1.available_balls)
+
+        self.assertEqual(2, self.machine.ball_controller.num_balls_known)
+
     def test_missing_ball_idle(self):
         coil1 = self.machine.coils['eject_coil1']
         device1 = self.machine.ball_devices['test_trough']
@@ -741,7 +879,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -758,10 +896,11 @@ class TestBallDevice(MpfTestCase):
         # it should keep the balls
         coil1.pulse = MagicMock()
         self.assertEqual(2, device1.balls)
+        self.assertEqual(2, device1.available_balls)
 
         # steal a ball from trough
         self.machine.switch_controller.process_switch("s_ball_switch1", 0)
-        self.advance_time_and_run(1)
+        self.advance_time_and_run(6)
         assert not coil1.pulse.called
         self.assertEqual(1, self._missing)
         self.assertEqual(0, self._captured)
@@ -770,6 +909,7 @@ class TestBallDevice(MpfTestCase):
 
         # count should be on less and one ball missing
         self.assertEqual(1, device1.balls)
+        self.assertEqual(1, device1.available_balls)
 
         # request an ball
         playfield.add_ball()
@@ -807,7 +947,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -923,7 +1063,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1051,7 +1191,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1166,7 +1306,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
 
         coil3.pulse = MagicMock()
@@ -1221,7 +1361,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1244,7 +1384,7 @@ class TestBallDevice(MpfTestCase):
         self.assertEqual(0, self._captured)
         self.assertEqual(0, device1.balls)
         self.assertEqual(0, playfield.balls)
-        self.assertRaises(ValueError, device1.counter.count_balls_sync)
+        self.assertRaises(ValueError, device1.ball_count_handler.counter.count_balls_sync)
 
         # the the other one
         self.machine.switch_controller.process_switch("s_ball_switch1", 0)
@@ -1259,7 +1399,7 @@ class TestBallDevice(MpfTestCase):
         self.assertEqual(0, self._captured)
         self.assertEqual(0, device1.balls)
         self.assertEqual(0, playfield.balls)
-        self.assertRaises(ValueError, device1.counter.count_balls_sync)
+        self.assertRaises(ValueError, device1.ball_count_handler.counter.count_balls_sync)
 
         self.advance_time_and_run(1)
         # but finally both are stable
@@ -1283,7 +1423,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1370,7 +1510,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1488,7 +1628,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self._captured = 0
         self._missing = 0
@@ -1568,7 +1708,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('collecting_balls_complete',
                                         self._collecting_balls_complete_handler)
@@ -1672,7 +1812,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('collecting_balls_complete',
                                         self._collecting_balls_complete_handler)
@@ -1825,7 +1965,7 @@ class TestBallDevice(MpfTestCase):
 
         self.machine.events.add_handler('balldevice_captured_from_playfield',
                                         self._captured_from_pf)
-        self.machine.events.add_handler('balldevice_1_ball_missing',
+        self.machine.events.add_handler('balldevice_ball_missing',
                                         self._missing_ball)
         self.machine.events.add_handler('collecting_balls_complete',
                                         self._collecting_balls_complete_handler)
@@ -1935,3 +2075,26 @@ class TestBallDevice(MpfTestCase):
         self.assertEqual("idle", trough._state)
         self.assertEqual("idle", launcher._state)
         self.assertEqual("idle", target._state)
+
+    def test_entrance_switch_ignore_window(self):
+        """Verify that an entrance switch doesn't hit during the ignore window."""
+        self.mock_event("balldevice_captured_from_playfield")
+
+        # First call should register the capture
+        self.machine.switch_controller.process_switch("s_entrance", 1)
+        self.advance_time_and_run(0.1)
+        self.assertEventCalled("balldevice_captured_from_playfield", times=1)
+        self.machine.switch_controller.process_switch("s_entrance", 0)
+
+        # Second call, 2 seconds later, should be ignored
+        self.advance_time_and_run(2)
+        self.machine.switch_controller.process_switch("s_entrance", 1)
+        self.advance_time_and_run(0.1)
+        self.assertEventCalled("balldevice_captured_from_playfield", times=1)
+        self.machine.switch_controller.process_switch("s_entrance", 0)
+
+        # Third call, 2 seconds later, should capture
+        self.advance_time_and_run(2)
+        self.machine.switch_controller.process_switch("s_entrance", 1)
+        self.advance_time_and_run(0.1)
+        self.assertEventCalled("balldevice_captured_from_playfield", times=2)

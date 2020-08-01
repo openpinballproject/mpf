@@ -3,40 +3,47 @@ import abc
 import asyncio
 from collections import namedtuple
 
-from typing import Optional
+from typing import Optional, Dict
+
+from mpf.core.logging import LogMixin
+from mpf.core.utility_functions import Util
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.devices.switch import Switch
-    from mpf.platforms.interfaces.driver_platform_interface import DriverPlatformInterface
-    from mpf.platforms.interfaces.switch_platform_interface import SwitchPlatformInterface
-    from mpf.platforms.interfaces.light_platform_interface import LightPlatformInterface
-    from mpf.platforms.interfaces.servo_platform_interface import ServoPlatformInterface
-    from mpf.platforms.interfaces.segment_display_platform_interface import SegmentDisplayPlatformInterface
-    from mpf.platforms.interfaces.hardware_sound_platform_interface import HardwareSoundPlatformInterface
-    from logging import Logger
-    from mpf.platforms.interfaces.stepper_platform_interface import StepperPlatformInterface
+    from mpf.devices.switch import Switch   # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.devices.stepper import Stepper     # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.platforms.interfaces.driver_platform_interface import DriverPlatformInterface  # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.switch_platform_interface import SwitchPlatformInterface  # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.light_platform_interface import LightPlatformInterface    # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.servo_platform_interface import ServoPlatformInterface    # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.segment_display_platform_interface import SegmentDisplayPlatformInterface     # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.hardware_sound_platform_interface import HardwareSoundPlatformInterface   # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.stepper_platform_interface import StepperPlatformInterface    # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.accelerometer_platform_interface import AccelerometerPlatformInterface    # pylint: disable-msg=cyclic-import,unused-import; # noqa
+    from mpf.platforms.interfaces.i2c_platform_interface import I2cPlatformInterface    # pylint: disable-msg=cyclic-import,unused-import; # noqa
 
 
-class BasePlatform(metaclass=abc.ABCMeta):
+class BasePlatform(LogMixin, metaclass=abc.ABCMeta):
 
     """Base class for all hardware platforms in MPF."""
+
+    __slots__ = ["machine", "features", "debug"]
 
     def __init__(self, machine):
         """Create features and set default variables.
 
         Args:
-            machine(mpf.core.machine.MachineController:
+            machine(mpf.core.machine.MachineController: The machine.
         """
         self.machine = machine
         self.features = {}
-        self.log = None         # type: Logger
+        super().__init__()
         self.debug = False
 
         # Set default platform features. Each platform interface can change
         # these to notify the framework of the specific features it supports.
-        self.features['has_dmd'] = False
-        self.features['has_rgb_dmd'] = False
+        self.features['has_dmds'] = False
+        self.features['has_rgb_dmds'] = False
         self.features['has_accelerometers'] = False
         self.features['has_i2c'] = False
         self.features['has_servos'] = False
@@ -44,35 +51,64 @@ class BasePlatform(metaclass=abc.ABCMeta):
         self.features['has_switches'] = False
         self.features['has_drivers'] = False
         self.features['tickless'] = False
-        self.features['segment_display'] = False
-        self.features['hardware_sounds'] = False
+        self.features['has_segment_displays'] = False
+        self.features['has_hardware_sound_systems'] = False
         self.features['has_steppers'] = False
+        self.features['allow_empty_numbers'] = False
 
-    def debug_log(self, msg, *args, **kwargs):
-        """Log when debug is set to True for platform."""
-        if self.debug:
-            self.log.debug(msg, *args, **kwargs)
+    def assert_has_feature(self, feature_name):
+        """Assert that this platform has a certain feature or raise an exception otherwise."""
+        if not self.features.get("has_{}".format(feature_name), False):
+            self.raise_config_error("Platform {} does not support to configure {feature_name}. "
+                                    "Please make sure the platform "
+                                    "you configured for {feature_name} actually supports that type "
+                                    "of devices.".format(self.__class__, feature_name=feature_name), 99)
 
-    @abc.abstractmethod
-    @asyncio.coroutine
-    def initialize(self):
+    def _configure_device_logging_and_debug(self, logger_name, config):
+        """Configure logging for platform."""
+        if config['debug']:
+            self.debug = True
+            config['console_log'] = 'full'
+            config['file_log'] = 'full'
+
+        self.configure_logging(logger_name,
+                               config['console_log'],
+                               config['file_log'])
+
+    @classmethod
+    def get_config_spec(cls):
+        """Return config spec for this platform."""
+        return False
+
+    # pylint: disable-msg=no-self-use
+    def get_info_string(self) -> str:
+        """Return information string about this platform."""
+        return "Not implemented"
+
+    # pylint: disable-msg=no-self-use
+    def update_firmware(self) -> str:
+        """Perform a firmware update."""
+
+    async def initialize(self):
         """Initialise the platform.
 
         This is called after all platforms have been created and core modules have been loaded.
         """
-        pass
+
+    async def start(self):
+        """Start receiving switch changes from this platform."""
 
     def tick(self):
-        """Called once per machine loop.
+        """Run task.
+
+        Called periodically.
 
         Subclass this method in a platform module to perform periodic updates
         to the platform hardware, e.g. reading switches, sending driver or
         light updates, etc.
 
         """
-        pass
 
-    @abc.abstractmethod
     def stop(self):
         """Stop the platform.
 
@@ -85,17 +121,18 @@ class BasePlatform(metaclass=abc.ABCMeta):
         crashes.
 
         """
-        pass
 
 
 class DmdPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for DMDs in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add dmd feature."""
         super().__init__(machine)
-        self.features['has_dmd'] = True
+        self.features['has_dmds'] = True
 
     @abc.abstractmethod
     def configure_dmd(self):
@@ -112,10 +149,12 @@ class HardwareSoundPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for hardware sounds in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add hardware sound feature."""
         super().__init__(machine)
-        self.features['hardware_sounds'] = True
+        self.features['has_hardware_sound_systems'] = True
 
     @abc.abstractmethod
     def configure_hardware_sound_system(self) -> "HardwareSoundPlatformInterface":
@@ -127,10 +166,12 @@ class RgbDmdPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for RGB DMDs in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add rgb dmd feature."""
         super().__init__(machine)
-        self.features['has_rgb_dmd'] = True
+        self.features['has_rgb_dmds'] = True
 
     @abc.abstractmethod
     def configure_rgb_dmd(self, name: str):
@@ -147,13 +188,15 @@ class SegmentDisplayPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for 7-segment/6-digits display in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add segment display feature."""
         super().__init__(machine)
-        self.features['segment_display'] = True
+        self.features['has_segment_displays'] = True
 
     @abc.abstractmethod
-    def configure_segment_display(self, number: str) -> "SegmentDisplayPlatformInterface":
+    async def configure_segment_display(self, number: str, platform_settings) -> "SegmentDisplayPlatformInterface":
         """Subclass this method in a platform module to configure a segment display.
 
         This method should return a reference to the segment display platform interface
@@ -162,9 +205,53 @@ class SegmentDisplayPlatform(BasePlatform, metaclass=abc.ABCMeta):
         raise NotImplementedError
 
 
+# pylint: disable-msg=abstract-method
+class SegmentDisplaySoftwareFlashPlatform(SegmentDisplayPlatform, metaclass=abc.ABCMeta):
+
+    """SegmentDisplayPlatform with software flash support."""
+
+    __slots__ = ["_displays", "_display_flash_task"]
+
+    def __init__(self, machine):
+        """Initialise software flash support."""
+        super().__init__(machine)
+        self._displays = set()
+        self._display_flash_task = None
+
+    async def initialize(self):
+        """Start flash task."""
+        await super().initialize()
+        self._display_flash_task = self.machine.clock.loop.create_task(self._display_flash())
+        self._display_flash_task.add_done_callback(Util.raise_exceptions)
+
+    async def _display_flash(self):
+        wait_time = 1 / (self.config['display_flash_frequency'] * 2)
+        while True:
+            # set on
+            await asyncio.sleep(wait_time, loop=self.machine.clock.loop)
+            for display in self._displays:
+                display.set_software_flash(True)
+            # set off
+            await asyncio.sleep(wait_time, loop=self.machine.clock.loop)
+            for display in self._displays:
+                display.set_software_flash(False)
+
+    def stop(self):
+        """Cancel flash task."""
+        super().stop()
+        if self._display_flash_task:
+            self._display_flash_task.cancel()
+
+    def _handle_software_flash(self, display):
+        """Register display for flash task."""
+        self._displays.add(display)
+
+
 class AccelerometerPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for Accelerometer platforms."""
+
+    __slots__ = []
 
     def __init__(self, machine):
         """Add accelerometer feature."""
@@ -172,10 +259,11 @@ class AccelerometerPlatform(BasePlatform, metaclass=abc.ABCMeta):
         self.features['has_accelerometers'] = True
 
     @abc.abstractmethod
-    def configure_accelerometer(self, config, callback):
+    def configure_accelerometer(self, number: str, config: dict, callback) -> "AccelerometerPlatformInterface":
         """Configure accelerometer.
 
         Args:
+            number: Number of this accelerometer
             config (dict): Configuration of this accelerometer
             callback (mpf.devices.accelerometer.Accelerometer): Callback device to send data to
         """
@@ -186,40 +274,15 @@ class I2cPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for I2C Platforms."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Initialise I2C platform and set feature."""
         super().__init__(machine)
         self.features['has_i2c'] = True
 
-    @abc.abstractmethod
-    def i2c_write8(self, address, register, value):
-        """Write an 8-bit value to a specific address and register via I2C.
-
-        Args:
-            address (int): I2C address
-            register (int): Register
-            value (int): Value to write
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def i2c_read8(self, address, register):
-        """Read an 8-bit value from an address and register via I2C.
-
-        Args:
-            address (int): I2C Address
-            register (int): Register
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def i2c_read16(self, address, register):
-        """Read an 16-bit value from an address and register via I2C.
-
-        Args:
-            address (int): I2C Address
-            register (int): Register
-        """
+    async def configure_i2c(self, number: str) -> "I2cPlatformInterface":
+        """Configure i2c device."""
         raise NotImplementedError
 
 
@@ -227,37 +290,67 @@ class ServoPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for servo platforms in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add servo feature."""
         super().__init__(machine)
         self.features['has_servos'] = True
 
     @abc.abstractmethod
-    def configure_servo(self, number: str) -> "ServoPlatformInterface":
-        """Configure a servo device in paltform.
+    async def configure_servo(self, number: str) -> "ServoPlatformInterface":
+        """Configure a servo device in platform.
 
         Args:
             number: Number of the servo
         """
         raise NotImplementedError
 
+
 class StepperPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for smart servo (axis) platforms in MPF."""
+
+    __slots__ = []
 
     def __init__(self, machine):
         """Add smart servo feature."""
         super().__init__(machine)
         self.features['has_steppers'] = True
 
+    @classmethod
+    def get_stepper_config_section(cls) -> Optional[str]:
+        """Return config section for additional stepper config items."""
+        return None
+
+    def validate_stepper_section(self, stepper: "Stepper", config: dict) -> dict:
+        """Validate a stepper config for platform.
+
+        Args:
+            stepper: Stepper to validate.
+            config: Config to validate.
+
+        Returns: Validated config.
+        """
+        if self.get_stepper_config_section():
+            spec = self.get_stepper_config_section()    # pylint: disable-msg=assignment-from-none
+            config = stepper.machine.config_validator.validate_config(spec, config, stepper.name)
+        elif config:
+            raise AssertionError("No platform_config supported but not empty {} for stepper {}".
+                                 format(config, stepper.name))
+
+        return config
+
     @abc.abstractmethod
-    def configure_stepper(self, number: str) -> "StepperPlatformInterface":
-        """Configure a smart stepper (axis) device in paltform.
+    async def configure_stepper(self, number: str, config: dict) -> "StepperPlatformInterface":
+        """Configure a smart stepper (axis) device in platform.
 
         Args:
             number: Number of the smart servo
+            config: Config for this stepper.
         """
         raise NotImplementedError
+
 
 class LightsPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
@@ -265,6 +358,8 @@ class LightsPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     This includes LEDs, GIs, Matrix Lights and any other lights.
     """
+
+    __slots__ = []
 
     def __init__(self, machine):
         """Add led feature."""
@@ -277,11 +372,10 @@ class LightsPlatform(BasePlatform, metaclass=abc.ABCMeta):
         raise NotImplementedError
 
     def light_sync(self):
-        """Called after channels of a light were updated.
+        """Update lights synchonously.
 
-        Can be used if multiple channels need to be flushed at once.
+        Called after channels of a light were updated. Can be used if multiple channels need to be flushed at once.
         """
-        pass
 
     @abc.abstractmethod
     def configure_light(self, number: str, subtype: str, platform_settings: dict) -> "LightPlatformInterface":
@@ -300,6 +394,8 @@ class SwitchPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for platforms with switches in MPF."""
 
+    __slots__ = []
+
     def __init__(self, machine):
         """Add switch feature."""
         super().__init__(machine)
@@ -313,7 +409,9 @@ class SwitchPlatform(BasePlatform, metaclass=abc.ABCMeta):
         object which will be called to access the hardware.
 
         Args:
+            number: Switch number.
             config : Config of switch.
+            platform_config: Platform specific settings.
 
         """
         raise NotImplementedError
@@ -333,7 +431,7 @@ class SwitchPlatform(BasePlatform, metaclass=abc.ABCMeta):
         Returns: Validated config.
         """
         if self.get_switch_config_section():
-            spec = self.get_switch_config_section()
+            spec = self.get_switch_config_section()     # pylint: disable-msg=assignment-from-none
             config = switch.machine.config_validator.validate_config(spec, config, switch.name)
         elif config:
             raise AssertionError("No platform_config supported but not empty {} for switch {}".
@@ -342,7 +440,7 @@ class SwitchPlatform(BasePlatform, metaclass=abc.ABCMeta):
         return config
 
     @abc.abstractmethod
-    def get_hw_switch_states(self):
+    async def get_hw_switch_states(self) -> Dict[str, bool]:
         """Get all hardware switch states.
 
         Subclass this method in a platform module to return the hardware
@@ -367,6 +465,8 @@ DriverConfig = namedtuple("DriverConfig", ["default_pulse_ms", "default_pulse_po
 class DriverPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     """Baseclass for platforms with drivers."""
+
+    __slots__ = []
 
     def __init__(self, machine):
         """Add driver feature and default max_pulse length."""
@@ -409,13 +509,35 @@ class DriverPlatform(BasePlatform, metaclass=abc.ABCMeta):
     def validate_coil_section(self, driver, config) -> dict:
         """Validate coil config for platform."""
         if self.get_coil_config_section():
-            spec = self.get_coil_config_section()
+            spec = self.get_coil_config_section()   # pylint: disable-msg=assignment-from-none
             config = driver.machine.config_validator.validate_config(spec, config, driver.name)
         elif config:
             raise AssertionError("No platform_config supported but not empty {} for driver {}".
                                  format(config, driver.name))
 
         return config
+
+    @abc.abstractmethod
+    def set_pulse_on_hit_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
+        """Set pulse on hit rule on driver.
+
+        Pulses a driver when a switch is hit. When the switch is released the pulse continues. Typically used for
+        autofire coils such as pop bumpers.
+        """
+        raise NotImplementedError
+
+    # pylint: disable-msg=no-self-use
+    def set_delayed_pulse_on_hit_rule(self, enable_switch: SwitchSettings, coil: DriverSettings, delay_ms: int):
+        """Set pulse on hit and release rule to driver.
+
+        When a switch is hit and a certain delay passed it pulses a driver.
+        When the switch is released the pulse continues.
+        Typically used for kickbacks.
+        """
+        del enable_switch
+        del coil
+        del delay_ms
+        raise AssertionError("This platform does not support delayed pulse hardware rules.")
 
     @abc.abstractmethod
     def set_pulse_on_hit_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
@@ -428,7 +550,7 @@ class DriverPlatform(BasePlatform, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def set_pulse_on_hit_and_enable_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
-        """Set pulse on hit and enable and relase rule on driver.
+        """Set pulse on hit and enable and release rule on driver.
 
         Pulses a driver when a switch is hit. Then enables the driver (may be with pwm). When the switch is released
         the pulse is canceled and the driver gets disabled. Typically used for single coil flippers.
@@ -443,14 +565,5 @@ class DriverPlatform(BasePlatform, metaclass=abc.ABCMeta):
         Pulses a driver when a switch is hit. Then enables the driver (may be with pwm). When the switch is released
         the pulse is canceled and the driver gets disabled. When the second disable_switch is hit the pulse is canceled
         and the driver gets disabled. Typically used on the main coil for dual coil flippers with eos switch.
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def set_pulse_on_hit_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
-        """Set pulse on hit rule on driver.
-
-        Pulses a driver when a switch is hit. When the switch is released the pulse continues. Typically used for
-        autofire coils such as pop bumpers.
         """
         raise NotImplementedError

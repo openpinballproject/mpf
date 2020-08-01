@@ -9,7 +9,7 @@ from mpf.core.system_wide_device import SystemWideDevice
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.platforms.interfaces.segment_display_platform_interface import SegmentDisplayPlatformInterface
+    from mpf.platforms.interfaces.segment_display_platform_interface import SegmentDisplayPlatformInterface     # pylint: disable-msg=cyclic-import,unused-import; # noqa
 
 TextStack = namedtuple("TextStack", ["text", "priority", "key"])
 
@@ -33,15 +33,32 @@ class SegmentDisplay(SystemWideDevice):
         self.text = ""                      # type: str
         self.flashing = False               # type: bool
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         """Initialise display."""
         # load platform
         self.platform = self.machine.get_platform_sections('segment_displays', self.config['platform'])
-        # configure hardware
-        self.hw_display = self.platform.configure_segment_display(self.config['number'])
+        self.platform.assert_has_feature("segment_displays")
 
-    def add_text(self, text: str, priority: int=0, key: str=None) -> None:
-        """Add text to display stack."""
+        if not self.platform.features['allow_empty_numbers'] and self.config['number'] is None:
+            self.raise_config_error("Segment Display must have a number.", 1)
+
+        # configure hardware
+        try:
+            self.hw_display = await self.platform.configure_segment_display(self.config['number'],
+                                                                            self.config['platform_settings'])
+        except AssertionError as e:
+            raise AssertionError("Error in platform while configuring segment display {}. "
+                                 "See error above.".format(self.name)) from e
+
+    def add_text(self, text: str, priority: int = 0, key: str = None) -> None:
+        """Add text to display stack.
+
+        This will replace texts with the same key.
+        """
+        # remove old text in case it has the same key
+        self._text_stack[:] = [x for x in self._text_stack if x.key != key]
+        # add new text
         self._text_stack.append(TextStack(text, priority, key))
         self._update_stack()
 
@@ -64,7 +81,6 @@ class SegmentDisplay(SystemWideDevice):
             self.hw_display.set_text("", flashing=False)
             if self._current_placeholder:
                 self.text = ""
-                self._current_placeholder.stop_monitor()
                 self._current_placeholder = None
             return
 
@@ -73,19 +89,18 @@ class SegmentDisplay(SystemWideDevice):
         # get top entry
         top_entry = self._text_stack[0]
 
-        if self._current_placeholder:
-            self._current_placeholder.stop_monitor()
-
         self._current_placeholder = TextTemplate(self.machine, top_entry.text)
-        self._current_placeholder.monitor_changes(self._update_display)
         self._update_display()
 
-    def _update_display(self) -> None:
+    def _update_display(self, *args, **kwargs) -> None:
         """Update display to current text."""
+        del args
+        del kwargs
         if not self._current_placeholder:
             new_text = ""
         else:
-            new_text = self._current_placeholder.evaluate()
+            new_text, future = self._current_placeholder.evaluate_and_subscribe({})
+            future.add_done_callback(self._update_display)
 
         # set text to display if it changed
         if new_text != self.text:

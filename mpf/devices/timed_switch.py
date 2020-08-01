@@ -1,5 +1,4 @@
 """Contains the Timed Switch device class."""
-
 from mpf.core.device_monitor import DeviceMonitor
 from mpf.core.mode_device import ModeDevice
 from mpf.core.system_wide_device import SystemWideDevice
@@ -19,7 +18,7 @@ class TimedSwitch(SystemWideDevice, ModeDevice):
         super().__init__(machine, name)
         self.active_switches = set()
 
-    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str=None) -> dict:
+    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str = None) -> dict:
         """Validate and parse config."""
         config = super().validate_and_parse_config(config, is_mode_config, debug_prefix)
 
@@ -35,7 +34,8 @@ class TimedSwitch(SystemWideDevice, ModeDevice):
 
         return config
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
 
         for tag in self.config['switch_tags']:
             for switch in self.machine.switches.items_tagged(tag):
@@ -99,30 +99,15 @@ class TimedSwitch(SystemWideDevice, ModeDevice):
         except KeyError:
             pass
 
-        '''event: flipper_cradle
+        '''event: (name)_active
+        config_attribute: events_when_active
 
-        desc: Posted when one of the flipper buttons has been active for 3
-        seconds.
-
-        Note that in order for this event to work, you have to add
-        ``left_flipper`` as a tag to the switch for your left flipper,
-        and ``right_flipper`` to your right flipper.
-
-        See :doc:`/config/timed_switches` for details.
+        desc: Posted when one of the switches buttons has been active for ``time``.
         '''
 
-        '''event: flipper_cradle_release
+        '''event: (name)_released
+        config_attribute: events_when_released
 
-        desc: Posted when one of the flipper buttons that has previously
-        been active for more than 3 seconds has been released.
-
-        If the player pushes in one flipper button for more than 3 seconds,
-        and then the second one and holds it in for more than 3 seconds,
-        this event won't be posted until both buttons have been released.
-
-        Note that in order for this event to work, you have to add
-        ``left_flipper`` as a tag to the switch for your left flipper,
-        and ``right_flipper`` to your right flipper.
-
-        See :doc:`/config/timed_switches` for details.
+        desc: Posted when one of the switches that has previously
+        been active for more than ``time`` has been released.
         '''

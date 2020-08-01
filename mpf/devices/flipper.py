@@ -27,6 +27,8 @@ class Flipper(SystemWideDevice):
         name: A string of the name you'll refer to this flipper object as.
     """
 
+    __slots__ = ["_enabled", "_active_rules", "_sw_flipped"]
+
     config_section = 'flippers'
     collection = 'flippers'
     class_label = 'flipper'
@@ -37,14 +39,24 @@ class Flipper(SystemWideDevice):
 
         self._enabled = False
         self._active_rules = []     # type: List[HardwareRule]
+        self._sw_flipped = False
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         if self.config['include_in_ball_search']:
             self.config['playfield'].ball_search.register(
                 self.config['ball_search_order'], self._ball_search, self.name)
 
-    @event_handler(10)
-    def enable(self, **kwargs):
+    @event_handler(1)
+    def event_enable(self, **kwargs):
+        """Handle enable control event.
+
+        To prevent multiple rules at the same time we prioritize disable > enable.
+        """
+        del kwargs
+        self.enable()
+
+    def enable(self):
         """Enable the flipper by writing the necessary hardware rules to the hardware controller.
 
         The hardware rules for coils can be kind of complex given all the
@@ -84,8 +96,6 @@ class Flipper(SystemWideDevice):
         rules). Note that this rule is the letter "i", not a numeral 1.
         I. Enable power if button is active and EOS is not active
         """
-        del kwargs
-
         # prevent duplicate enable
         if self._enabled:
             return
@@ -96,32 +106,45 @@ class Flipper(SystemWideDevice):
 
         # Apply the proper hardware rules for our config
 
-        if not self.config['hold_coil']:  # single coil
-            self._enable_single_coil_rule()
+        if self.config['activation_switch']:
+            # only add rules if we are using a switch
+            if self.config['use_eos']:
+                self._enable_main_coil_eos_cutoff_rule()
+            elif self.config['hold_coil']:
+                self._enable_main_coil_pulse_rule()
+            else:
+                self._enable_single_coil_rule()
 
-        elif not self.config['use_eos']:  # two coils, no eos
-            self._enable_main_coil_pulse_rule()
-            self._enable_hold_coil_rule()
+            if self.config['hold_coil']:
+                self._enable_hold_coil_rule()
 
-        else:  # two coils, cutoff main on EOS
-            self._enable_main_coil_eos_cutoff_rule()
-            self._enable_hold_coil_rule()
+    @event_handler(10)
+    def event_disable(self, **kwargs):
+        """Handle disable control event.
 
-    @event_handler(1)
-    def disable(self, **kwargs):
+        To prevent multiple rules at the same time we prioritize disable > enable.
+        """
+        del kwargs
+        self.disable()
+
+    def disable(self):
         """Disable the flipper.
 
         This method makes it so the cabinet flipper buttons no longer control
         the flippers. Used when no game is active and when the player has
         tilted.
         """
-        del kwargs
         if not self._enabled:
             return
 
         self.debug_log("Disabling")
         for rule in self._active_rules:
+            # disable all rules
             self.machine.platform_controller.clear_hw_rule(rule)
+
+        if self._sw_flipped:
+            # disable the coils if activated via sw_flip
+            self.sw_release()
 
         self._active_rules = []
 
@@ -135,8 +158,8 @@ class Flipper(SystemWideDevice):
             if not pulse_ms:
                 pulse_ms = self.machine.config['mpf']['default_pulse_ms']
             return int(pulse_ms * settings_factor)
-        else:
-            return pulse_ms
+
+        return pulse_ms
 
     def _get_hold_pulse_ms(self) -> Optional[int]:
         """Return pulse_ms for hold coil."""
@@ -146,8 +169,8 @@ class Flipper(SystemWideDevice):
             if not pulse_ms:
                 pulse_ms = self.machine.config['mpf']['default_pulse_ms']
             return int(pulse_ms * settings_factor)
-        else:
-            return pulse_ms
+
+        return pulse_ms
 
     def _get_pulse_power(self) -> Optional[float]:
         """Return pulse_power."""
@@ -191,7 +214,8 @@ class Flipper(SystemWideDevice):
         rule = self.machine.platform_controller.set_pulse_on_hit_and_enable_and_release_rule(
             SwitchRuleSettings(switch=self.config['activation_switch'], debounce=False, invert=False),
             DriverRuleSettings(driver=self.config['hold_coil'], recycle=False),
-            PulseRuleSettings(duration=self._get_hold_pulse_ms(), power=self._get_hold_pulse_power())
+            PulseRuleSettings(duration=self._get_hold_pulse_ms(), power=self._get_hold_pulse_power()),
+            HoldRuleSettings(power=self._get_hold_power())
         )
         self._active_rules.append(rule)
 
@@ -202,12 +226,18 @@ class Flipper(SystemWideDevice):
             SwitchRuleSettings(switch=self.config['activation_switch'], debounce=False, invert=False),
             SwitchRuleSettings(switch=self.config['eos_switch'], debounce=False, invert=False),
             DriverRuleSettings(driver=self.config['main_coil'], recycle=False),
-            PulseRuleSettings(duration=self._get_hold_pulse_ms(), power=self._get_hold_pulse_power())
+            PulseRuleSettings(duration=self._get_hold_pulse_ms(), power=self._get_hold_pulse_power()),
+            HoldRuleSettings(power=self._get_hold_power())
         )
         self._active_rules.append(rule)
 
     @event_handler(6)
-    def sw_flip(self, include_switch=False):
+    def event_sw_flip(self, **kwargs):
+        """Handle sw_flip control event."""
+        del kwargs
+        self.sw_flip()
+
+    def sw_flip(self):
         """Activate the flipper via software as if the flipper button was pushed.
 
         This is needed because the real flipper activations are handled in
@@ -217,11 +247,10 @@ class Flipper(SystemWideDevice):
         Note this method will keep this flipper enabled until you call
         sw_release().
         """
-        if include_switch:
-            self.machine.switch_controller.process_switch(
-                name=self.config['activation_switch'].name,
-                state=1,
-                logical=True)
+        if not self._enabled:
+            return
+
+        self._sw_flipped = True
 
         if self.config['hold_coil']:
             self.config['main_coil'].pulse()
@@ -230,16 +259,17 @@ class Flipper(SystemWideDevice):
             self.config['main_coil'].enable()
 
     @event_handler(5)
-    def sw_release(self, include_switch=False):
+    def event_sw_release(self, **kwargs):
+        """Handle sw_release control event."""
+        del kwargs
+        self.sw_release()
+
+    def sw_release(self):
         """Deactive the flipper via software as if the flipper button was released.
 
         See the documentation for sw_flip() for details.
         """
-        if include_switch:
-            self.machine.switch_controller.process_switch(
-                name=self.config['activation_switch'].name,
-                state=0,
-                logical=True)
+        self._sw_flipped = False
 
         # disable the flipper coil(s)
         self.config['main_coil'].disable()

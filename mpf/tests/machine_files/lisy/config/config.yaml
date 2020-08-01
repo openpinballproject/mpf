@@ -4,6 +4,7 @@ hardware:
     platform: lisy
 
 lisy:
+    debug: True
     connection: network
     network_port: 1234
     network_host: "localhost"
@@ -29,19 +30,17 @@ coils:
     c_trough_eject:
         number: 103
         default_pulse_ms: 3s
+
+digital_outputs:
     game_over_relay:
-        number: 101
-        default_hold_power: 1.0
+        number: 1
+        type: light
+        enable_events: ball_started
+        disable_events: ball_will_end
 
 lights:
   test_light:
     number: 3
-
-coil_player:
-   ball_started:
-     game_over_relay: enable
-   ball_will_end:
-     game_over_relay: disable
 
 segment_displays:
   info_display:
@@ -59,6 +58,31 @@ hardware_sound_player:
     test2:
         2:
             action: play
+    play_file:
+        "some_file": play_file
+    play_file_loop:
+        "some_file":
+          action: play_file
+          platform_options:
+            loop: True
+            no_cache: False
+    play_text:
+        text:
+          action: text_to_speech
+          value: "Hello MPF"
+          platform_options:
+            loop: False
+            no_cache: True
+    volume_05:
+        set_volume:
+          action: set_volume
+          value: 0.5
+    increase_volume:
+        0.1: increase_volume
+    decrease_volume:
+        decrease_volume:
+          action: decrease_volume
+          value: 0.01
     test3:
         3: play
     test_stop: stop

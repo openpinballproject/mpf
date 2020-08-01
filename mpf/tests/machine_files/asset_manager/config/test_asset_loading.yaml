@@ -1,8 +1,7 @@
 #config_version=5
 
 mpf:
-  default_matrix_light_hw_update_hz: 1
-  default_led_hw_update_hz: 1
+  default_light_hw_update_hz: 1
 
 lights:
     led_01:
@@ -35,27 +34,6 @@ coils:
 
 modes:
   - mode1
-
-assets:
-    file_shows:
-        default:
-            load: preload
-        preload:
-            load: preload
-            test_key: test_value
-        on_demand:
-            load: on_demand
-        mode_start:
-            load: mode_start
-
-file_shows:
-  show_12_new_name:
-    file: show12.yaml
-    test_key: test_value_override12
-  show_13_new_name:
-    file: show13.yaml
-  show3:
-    test_key: test_value_override3
 
 show_pools:
   group1:
@@ -96,3 +74,15 @@ show_pools:
       - show2
       - show3
     type: random_force_all
+  group7:
+    shows:
+      - show1
+      - show2{mode.mode1.active}
+      - show3{mode.mode1.stopping}
+    type: random
+  group8:
+    shows:
+      - show1{mode.mode1.active}
+      - show2
+      - show3{mode.mode1.stopping}
+    type: sequence

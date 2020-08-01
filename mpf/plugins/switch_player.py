@@ -5,7 +5,7 @@ from mpf.core.delays import DelayManager
 from mpf.core.utility_functions import Util
 
 
-class SwitchPlayer(object):
+class SwitchPlayer:
 
     """Plays back switch sequences from a config file, used for testing."""
 
@@ -20,7 +20,7 @@ class SwitchPlayer(object):
             return
 
         self.machine = machine
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
         self.current_step = 0
 
         self.config = self.machine.config['switch_player']
@@ -80,6 +80,3 @@ class SwitchPlayer(object):
             switch,
             state=0,
             logical=True)
-
-
-plugin_class = SwitchPlayer

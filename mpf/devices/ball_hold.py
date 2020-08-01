@@ -1,6 +1,7 @@
 """Contains the BallHold device class."""
-
 from collections import deque
+
+from mpf.core.enable_disable_mixin import EnableDisableMixin
 
 from mpf.core.device_monitor import DeviceMonitor
 from mpf.core.events import event_handler
@@ -8,14 +9,17 @@ from mpf.core.mode_device import ModeDevice
 from mpf.core.system_wide_device import SystemWideDevice
 
 
-@DeviceMonitor("balls_held", "enabled")
-class BallHold(SystemWideDevice, ModeDevice):
+@DeviceMonitor("balls_held")
+class BallHold(EnableDisableMixin, SystemWideDevice, ModeDevice):
 
     """Ball hold device which can be used to keep balls in ball devices and control their eject later on."""
 
     config_section = 'ball_holds'
     collection = 'ball_holds'
     class_label = 'ball_hold'
+
+    __slots__ = ["hold_devices", "source_playfield", "balls_held", "_release_hold", "_released_balls",
+                 "hold_queue"]
 
     def __init__(self, machine, name):
         """Initialise ball hold."""
@@ -25,15 +29,9 @@ class BallHold(SystemWideDevice, ModeDevice):
 
         # initialise variables
         self.balls_held = 0
-        self.enabled = False
         self._released_balls = 0
         self._release_hold = None
         self.hold_queue = deque()
-
-    def device_removed_from_mode(self, mode):
-        """Disable ball hold when mode ends."""
-        del mode
-        self.disable()
 
     @property
     def can_exist_outside_of_game(self):
@@ -50,7 +48,8 @@ class BallHold(SystemWideDevice, ModeDevice):
                 config['disable_events'] = 'ball_will_end'
         return super().prepare_config(config, is_mode_config)
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self.hold_devices = []
         for device in self.config['hold_devices']:
             self.hold_devices.append(device)
@@ -63,52 +62,35 @@ class BallHold(SystemWideDevice, ModeDevice):
 
         self.source_playfield = self.config['source_playfield']
 
-    @event_handler(10)
-    def enable(self, **kwargs):
+    def _enable(self):
         """Enable the hold.
 
         If the hold is not enabled, no balls will be held.
-
-        Args:
-            **kwargs: unused
         """
-        del kwargs
+        self.debug_log("Enabling...")
+        self._register_handlers()
 
-        if not self.enabled:
-            self.debug_log("Enabling...")
-            self._register_handlers()
-            self.enabled = True
-        else:
-            self.debug_log(
-                "Received request to enable, but this device is already "
-                "enabled")
-
-    @event_handler(0)
-    def disable(self, **kwargs):
+    def _disable(self):
         """Disable the hold.
 
         If the hold is not enabled, no balls will be held.
-
-        Args:
-            **kwargs: unused
         """
-        del kwargs
         self.debug_log("Disabling...")
         self._unregister_handlers()
-        self.enabled = False
 
     @event_handler(1)
-    def reset(self, **kwargs):
+    def event_reset(self, **kwargs):
+        """Event handler for reset event."""
+        del kwargs
+        self.reset()
+
+    def reset(self):
         """Reset the hold.
 
         Will release held balls. Device status will stay the same
         (enabled/disabled). It will wait for those balls to drain and block
         ball_ending until they do. Those balls are not included in ball_in_play.
-
-        Args:
-            **kwargs: unused
         """
-        del kwargs
         self._released_balls += self.release_all()
         self.balls_held = 0
 
@@ -151,26 +133,34 @@ class BallHold(SystemWideDevice, ModeDevice):
             self._release_hold = queue
 
     @event_handler(9)
-    def release_one_if_full(self, **kwargs):
-        """Release one ball if hold is full."""
+    def event_release_one_if_full(self, **kwargs):
+        """Event handler for release_one_if_full event."""
         del kwargs
+        self.release_one_if_full()
+
+    def release_one_if_full(self):
+        """Release one ball if hold is full."""
         if self.is_full():
             self.release_one()
 
     @event_handler(8)
-    def release_one(self, **kwargs):
-        """Release one ball.
-
-        Args:
-            **kwargs: unused
-        """
+    def event_release_one(self, **kwargs):
+        """Event handler for release_one event."""
         del kwargs
+        self.release_one()
+
+    def release_one(self):
+        """Release one ball."""
         self.release_balls(balls_to_release=1)
 
     @event_handler(7)
-    def release_all(self, **kwargs):
-        """Release all balls in hold."""
+    def event_release_all(self, **kwargs):
+        """Event handler for release_all event."""
         del kwargs
+        self.release_all()
+
+    def release_all(self):
+        """Release all balls in hold."""
         return self.release_balls(self.balls_held)
 
     def release_balls(self, balls_to_release):
@@ -179,14 +169,14 @@ class BallHold(SystemWideDevice, ModeDevice):
         Args:
             balls_to_release: number of ball to release from hold
         """
-        if len(self.hold_queue) == 0:
+        if not self.hold_queue:
             return 0
 
         remaining_balls_to_release = balls_to_release
 
         self.debug_log("Releasing up to %s balls from hold", balls_to_release)
         balls_released = 0
-        while len(self.hold_queue) > 0:
+        while self.hold_queue:
             device, balls_held = self.hold_queue.pop()
             balls = balls_held
             balls_in_device = device.balls
@@ -220,11 +210,13 @@ class BallHold(SystemWideDevice, ModeDevice):
         return balls_released
 
     def _register_handlers(self):
+        priority = (self.mode.priority if self.mode else 0) + \
+            self.config['priority']
         # register on ball_enter of hold_devices
         for device in self.hold_devices:
             self.machine.events.add_handler(
                 'balldevice_' + device.name + '_ball_enter',
-                self._hold_ball, device=device)
+                self._hold_ball, device=device, priority=priority)
 
     def _unregister_handlers(self):
         # unregister ball_enter handlers
@@ -242,7 +234,7 @@ class BallHold(SystemWideDevice, ModeDevice):
         return balls
 
     def _hold_ball(self, device, new_balls, unclaimed_balls, **kwargs):
-        """Callback for _ball_enter event of hold_devices."""
+        """Handle result of _ball_enter event of hold_devices."""
         del new_balls
         del kwargs
         # if full do not take any balls

@@ -1,17 +1,15 @@
 """MPF clock and main loop."""
 import asyncio
-from functools import partial
-
-from typing import Tuple, Generator
-
+from typing import Tuple
 from serial_asyncio import create_serial_connection
-
 from mpf.core.logging import LogMixin
 
 
 class PeriodicTask:
 
     """A periodic asyncio task."""
+
+    __slots__ = ["_canceled", "_interval", "_callback", "_loop", "_last_call"]
 
     def __init__(self, interval, loop, callback):
         """Initialise periodic task."""
@@ -47,7 +45,9 @@ class ClockBase(LogMixin):
 
     """A clock object with event support."""
 
-    def __init__(self, machine=None):
+    __slots__ = ["machine", "loop"]
+
+    def __init__(self, machine=None, loop=None):
         """Initialise clock."""
         super().__init__()
         self.machine = machine
@@ -62,28 +62,38 @@ class ClockBase(LogMixin):
             self.configure_logging('Clock', None, None)
 
         self.debug_log("Starting tickless clock")
-        self.loop = self._create_event_loop()
+        if not loop:
+            self.loop = self._create_event_loop()   # type: asyncio.AbstractEventLoop
+        else:
+            self.loop = loop                        # type: asyncio.AbstractEventLoop
 
     # pylint: disable-msg=no-self-use
     def _create_event_loop(self):
+        try:
+            import uvloop
+        except ImportError:
+            pass
+        else:
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
         return asyncio.get_event_loop()
 
-    def run(self):
+    def run(self, stop_future):
         """Run the clock."""
-        self.loop.run_forever()
+        return self.loop.run_until_complete(stop_future)
 
     def get_time(self):
         """Get the last tick made by the clock."""
         return self.loop.time()
 
-    @asyncio.coroutine
     def start_server(self, client_connected_cb, host=None, port=None, **kwd):
         """Start a server."""
-        yield from asyncio.streams.start_server(client_connected_cb, host, port, **kwd)
+        return asyncio.start_server(client_connected_cb, host, port, loop=self.loop, **kwd)
 
     def open_connection(self, host=None, port=None, *,
                         limit=None, **kwds):
-        """A wrapper for create_connection() returning a (reader, writer) pair.
+        """Open connection using asyncio.
+
+        Wrapper for create_connection() returning a (reader, writer) pair.
 
         The reader returned is a StreamReader instance; the writer is a
         StreamWriter instance.
@@ -105,10 +115,10 @@ class ClockBase(LogMixin):
             limit = asyncio.streams._DEFAULT_LIMIT
         return asyncio.open_connection(host=host, port=port, loop=self.loop, limit=limit, **kwds)
 
-    @asyncio.coroutine
-    def open_serial_connection(self, limit=None, **kwargs) ->\
-            Generator[int, None, Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
-        """A wrapper for create_serial_connection() returning a (reader, writer) pair.
+    async def open_serial_connection(self, limit=None, **kwargs) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open a serial connection using asyncio.
+
+        A wrapper for create_serial_connection() returning a (reader, writer) pair.
 
         The reader returned is a StreamReader instance; the writer is a StreamWriter instance.
 
@@ -129,7 +139,7 @@ class ClockBase(LogMixin):
 
         reader = asyncio.StreamReader(limit=limit, loop=self.loop)
         protocol = asyncio.StreamReaderProtocol(reader, loop=self.loop)
-        transport, _ = yield from create_serial_connection(
+        transport, _ = await create_serial_connection(
             loop=self.loop,
             protocol_factory=lambda: protocol,
             **kwargs)
@@ -141,40 +151,41 @@ class ClockBase(LogMixin):
 
         If <timeout> is unspecified
         or 0, the callback will be called after the next frame is rendered.
+
         Args:
             callback: callback to call on timeout
             timeout: seconds to wait
 
-        Returns:
-            A :class:`ClockEvent` instance.
+        Returns a :class:`ClockEvent` instance.
         """
         if not callable(callback):
             raise AssertionError('callback must be a callable, got %s' % callback)
 
         event = self.loop.call_later(delay=timeout, callback=callback)
 
-        self.debug_log("Scheduled a one-time clock callback (callback=%s, timeout=%s)",
-                       str(callback), timeout)
+        if self._debug_to_console or self._debug_to_file:
+            self.debug_log("Scheduled a one-time clock callback (callback=%s, timeout=%s)",
+                           str(callback), timeout)
 
         return event
 
-    def schedule_interval(self, callback, timeout):
+    def schedule_interval(self, callback, timeout) -> PeriodicTask:
         """Schedule an event to be called every <timeout> seconds.
 
         Args:
             callback: callback to call on timeout
             timeout: period to wait
 
-        Returns:
-            A PeriodicTask object.
+        Returns a PeriodicTask object.
         """
         if not callable(callback):
             raise AssertionError('callback must be a callable, got {}'.format(callback))
 
         periodic_task = PeriodicTask(timeout, self.loop, callback)
 
-        self.debug_log("Scheduled a recurring clock callback (callback=%s, timeout=%s)",
-                       str(callback), timeout)
+        if self._debug_to_console or self._debug_to_file:
+            self.debug_log("Scheduled a recurring clock callback (callback=%s, timeout=%s)",
+                           str(callback), timeout)
 
         return periodic_task
 
@@ -185,7 +196,7 @@ class ClockBase(LogMixin):
         Args:
             event: Event to cancel
         """
-        if isinstance(event, (asyncio.Handle, PeriodicTask)):
+        try:
             event.cancel()
-        else:
-            raise AssertionError("Broken unschedule")
+        except Exception:     # pylint: disable-msg=broad-except
+            raise AssertionError("Broken unschedule: {} {}".format(event, type(event)))

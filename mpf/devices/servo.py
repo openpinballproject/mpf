@@ -24,20 +24,29 @@ class Servo(SystemWideDevice):
         self.hw_servo = None
         self.platform = None        # type: ServoPlatform
         self._position = None
+        self.speed_limit = None
+        self.acceleration_limit = None
         self._ball_search_started = False
-        self.delay = DelayManager(machine.delayRegistry)
+        self.delay = DelayManager(machine)
         super().__init__(machine, name)
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self.platform = self.machine.get_platform_sections('servo_controllers', self.config['platform'])
+        self.platform.assert_has_feature("servos")
 
         for position in self.config['positions']:
             self.machine.events.add_handler(self.config['positions'][position],
                                             self._position_event,
                                             position=position)
 
-        self.hw_servo = self.platform.configure_servo(self.config['number'])
+        if not self.platform.features['allow_empty_numbers'] and self.config['number'] is None:
+            self.raise_config_error("Servo must have a number.", 1)
+
+        self.hw_servo = await self.platform.configure_servo(self.config['number'])
         self._position = self.config['reset_position']
+        self.speed_limit = self.config['speed_limit']
+        self.acceleration_limit = self.config['acceleration_limit']
 
         if self.config['include_in_ball_search']:
             self.machine.events.add_handler("ball_search_started",
@@ -45,10 +54,17 @@ class Servo(SystemWideDevice):
             self.machine.events.add_handler("ball_search_stopped",
                                             self._ball_search_stop)
 
+        self.set_speed_limit(self.speed_limit)
+        self.set_acceleration_limit(self.acceleration_limit)
+
     @event_handler(1)
-    def reset(self, **kwargs):
-        """Go to reset position."""
+    def event_reset(self, **kwargs):
+        """Event handler for reset event."""
         del kwargs
+        self.reset()
+
+    def reset(self):
+        """Go to reset position."""
         self.go_to_position(self.config['reset_position'])
 
     @event_handler(5)
@@ -65,11 +81,21 @@ class Servo(SystemWideDevice):
 
     def _go_to_position(self, position):
         # linearly interpolate between servo limits
-        position = self.config['servo_min'] + position * (
+        corrected_position = self.config['servo_min'] + position * (
             self.config['servo_max'] - self.config['servo_min'])
 
+        self.debug_log("Moving to position %s (corrected: %s)", position, corrected_position)
+
         # call platform with calculated position
-        self.hw_servo.go_to_position(position)
+        self.hw_servo.go_to_position(corrected_position)
+
+    def set_speed_limit(self, speed_limit):
+        """Set speed parameter."""
+        self.hw_servo.set_speed_limit(speed_limit)
+
+    def set_acceleration_limit(self, acceleration_limit):
+        """Set acceleration parameter."""
+        self.hw_servo.set_acceleration_limit(acceleration_limit)
 
     def _ball_search_start(self, **kwargs):
         del kwargs

@@ -63,17 +63,23 @@ class SettingsController(MpfController):
 
     def __getattr__(self, item):
         """Return setting."""
+        if "_settings" not in self.__dict__ or item not in self.__dict__['_settings']:
+            raise AttributeError()
         return self.get_setting_value(item)
+
+    def get_setting_machine_var(self, setting_name):
+        """Return machine var name."""
+        return self._settings[setting_name].machine_var
 
     def get_setting_value(self, setting_name):
         """Return the current value of a setting."""
         if setting_name not in self._settings:
             raise AssertionError("Invalid setting {}".format(setting_name))
 
-        if not self.machine.is_machine_var(self._settings[setting_name].machine_var):
+        if not self.machine.variables.is_machine_var(self._settings[setting_name].machine_var):
             value = self._settings[setting_name].default
         else:
-            value = self.machine.get_machine_var(self._settings[setting_name].machine_var)
+            value = self.machine.variables.get_machine_var(self._settings[setting_name].machine_var)
 
         self.debug_log("Retrieving value: {}={}".format(setting_name, value))
 
@@ -89,5 +95,5 @@ class SettingsController(MpfController):
         if value not in self._settings[setting_name].values:
             raise AssertionError("Invalid value {} for setting {}".format(value, setting_name))
 
-        self.machine.configure_machine_var(name=self._settings[setting_name].machine_var, persist=True)
-        self.machine.set_machine_var(name=self._settings[setting_name].machine_var, value=value)
+        self.machine.variables.configure_machine_var(name=self._settings[setting_name].machine_var, persist=True)
+        self.machine.variables.set_machine_var(name=self._settings[setting_name].machine_var, value=value)

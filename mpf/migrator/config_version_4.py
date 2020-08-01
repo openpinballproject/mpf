@@ -4,15 +4,16 @@ import os
 import re
 from copy import deepcopy
 
-from mpf.file_interfaces.yaml_roundtrip import YamlRoundtrip, MpfRoundTripLoader
-from ruamel import yaml
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from typing import Dict
 from typing import Tuple
 
+from ruamel import yaml
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+from mpf.file_interfaces.yaml_roundtrip import YamlRoundtrip, MpfRoundTripLoader
 from mpf.core.utility_functions import Util
 from mpf.migrator.migrator import VersionMigrator
-from mpf.core.rgb_color import named_rgb_colors, RGBColor
+from mpf.core.rgb_color import NAMED_RGB_COLORS, RGBColor
 
 
 class V4Migrator(VersionMigrator):
@@ -90,8 +91,8 @@ class V4Migrator(VersionMigrator):
 
         if display:
             return '{}_slide_{}'.format(display, cls.slides[display])
-        else:
-            return 'slide_{}'.format(cls.slides[display])
+
+        return 'slide_{}'.format(cls.slides[display])
 
     @classmethod
     def _add_display(cls, name, w, h):
@@ -619,7 +620,7 @@ class V4Migrator(VersionMigrator):
                     YamlRoundtrip.del_key_with_comments(self.fc[section_name],
                                                         name, self.log)
 
-            if len(self.fc[section_name]) == 0:
+            if not self.fc[section_name]:
                 self.log.debug("%s: is now empty. Will remove it.",
                                section_name)
                 YamlRoundtrip.del_key_with_comments(self.fc, section_name,
@@ -686,8 +687,8 @@ class V4Migrator(VersionMigrator):
     def _format_anchor_and_value(cls, anchor, value):
         if value < 0:
             return '{}{}'.format(anchor, value)
-        else:
-            return '{}+{}'.format(anchor, value)
+
+        return '{}+{}'.format(anchor, value)
 
     def _migrate_element_y_and_anchor(self, element, display, height):
         if 'y' in element:
@@ -839,7 +840,7 @@ class V4Migrator(VersionMigrator):
     def _get_color(self, color):
         color_tuple = RGBColor.hex_to_rgb(color)
 
-        for color_name, val in named_rgb_colors.items():
+        for color_name, val in NAMED_RGB_COLORS.items():
             if color_tuple == val:
                 self.log.debug("Converting hex color '%s' to named color "
                                "'%s'", color, color_name)
@@ -1004,8 +1005,8 @@ class V4Migrator(VersionMigrator):
             play_events = settings.pop('start_events', None)
             stop_events = settings.pop('stop_events', None)
 
-            play_events = Util.string_to_lowercase_list(play_events)
-            stop_events = Util.string_to_lowercase_list(stop_events)
+            play_events = Util.string_to_event_list(play_events)
+            stop_events = Util.string_to_event_list(stop_events)
 
             for event in play_events:
                 self._add_to_sound_player(temp_sound_player, event, this_sound,
@@ -1072,8 +1073,7 @@ class V4Migrator(VersionMigrator):
 
     def is_show_file(self):
         """Verify we have a show file and that it's an old version."""
-        if 'tocks' in self.fc[0]:
-            return True
+        return 'tocks' in self.fc[0]
 
     def _migrate_show_file(self):
         self.log.debug("Migrating show file: %s", self.file_name)

@@ -7,12 +7,12 @@ import sys
 import time
 import unittest
 
+from mpf.core.config_loader import YamlMultifileConfigLoader
+
 from unittest.mock import *
 
 import asyncio
 from asyncio import events
-import ruamel.yaml as yaml
-from typing import Any
 
 from mpf.core.logging import LogMixin
 from mpf.core.rgb_color import RGBColor
@@ -27,35 +27,93 @@ from mpf.core.utility_functions import Util
 from mpf.file_interfaces.yaml_interface import YamlInterface
 
 YamlInterface.cache = True
+UNITTEST_CONFIG_CACHE = {}
+
+
+class UnitTestConfigLoader(YamlMultifileConfigLoader):
+
+    """Config Loader for Unit Tests."""
+
+    def __init__(self, machine_path, configfile, config_defaults, config_patches, spec_patches):
+        super().__init__(machine_path, configfile, True, True)
+        self.config_defaults = config_defaults
+        self.config_patches = config_patches
+        self.spec_patches = spec_patches
+
+    def _load_config_spec(self):
+        config_spec = super()._load_config_spec()
+        if self.spec_patches:
+            config_spec = Util.dict_merge(config_spec, self.spec_patches)
+        return config_spec
+
+    def _load_mpf_machine_config(self, config_spec):
+        config = super()._load_mpf_machine_config(config_spec)
+
+        if self.config_defaults:
+            config = Util.dict_merge(self.config_defaults, config)
+        if self.config_patches:
+            config = Util.dict_merge(config, self.config_patches, False)
+        return config
+
+
+class MpfUnitTestFormatter(logging.Formatter):
+
+    """Log Test and Real Time."""
+
+    def formatTime(self, record, datefmt=None):
+        """Return Real Time and Test Time."""
+        return "{} : {:.3f}".format(super().formatTime(record, datefmt), record.created_clock)
+
+
+def test_config(config_file):
+
+    """Decorator to overwrite config file for one test."""
+
+    def test_decorator(fn):
+        """Decorate function."""
+        fn.config_file = config_file
+        return fn
+    return test_decorator
+
+
+def test_config_directory(config_directory):
+
+    """Decorator to overwrite config directory for one test."""
+
+    def test_decorator(fn):
+        """Decorate function."""
+        fn.config_directory = config_directory
+        return fn
+    return test_decorator
 
 
 class TestMachineController(MachineController):
 
     """A patched version of the MachineController used in tests.
-    
+
     The TestMachineController has a few changes from the regular machine
     controller to facilitate running unit tests, including:
-    
+
     * Use the TestDataManager instead of the real one.
     * Use a test clock which we can manually advance instead of the regular
       clock tied to real-world time.
     * Only load plugins if ``self._enable_plugins`` is *True*.
     * Merge any ``test_config_patches`` into the machine config.
     * Disabled the config file caching to always load the config from disk.
-    
-    """
-    local_mpf_config_cache = {}     # type: Any
 
-    def __init__(self, mpf_path, machine_path, options, config_patches, config_defaults, clock, mock_data,
+    """
+
+    def __init__(self, options, config, config_patches, config_defaults, clock, mock_data,
                  enable_plugins=False):
         self.test_config_patches = config_patches
         self.test_config_defaults = config_defaults
         self._enable_plugins = enable_plugins
         self._test_clock = clock
         self._mock_data = mock_data
-        super().__init__(mpf_path, machine_path, options)
+        super().__init__(options, config)
 
     def create_data_manager(self, config_name):
+        """Create TestDataManager."""
         return TestDataManager(self._mock_data.get(config_name, {}))
 
     def _load_clock(self):
@@ -65,19 +123,9 @@ class TestMachineController(MachineController):
         if self._test_clock:
             self._test_clock.loop.close()
 
-    def sleep_until_next_event_mock(self):
-        for socket, callback in self.clock.read_sockets.items():
-            if socket.ready():
-                callback()
-
     def _register_plugin_config_players(self):
         if self._enable_plugins:
             super()._register_plugin_config_players()
-
-    def _load_config(self):
-        super()._load_config()
-        self.config = Util.dict_merge(self.test_config_defaults, self.config)
-        self.config = Util.dict_merge(self.config, self.test_config_patches)
 
 
 class MpfTestCase(unittest.TestCase):
@@ -104,46 +152,63 @@ class MpfTestCase(unittest.TestCase):
         self.machine_config_defaults['playfields']['playfield']['tags'] = "default"
         self.machine_config_defaults['playfields']['playfield']['default_source_device'] = None
 
+        self.machine_spec_patches = {}
+
         self._last_event_kwargs = {}
         self._events = {}
         self.expected_duration = 0.5
 
-    def getConfigFile(self):
+    def start_mode(self, mode):
+        """Start mode."""
+        self.assertIn(mode, self.machine.modes)
+        self.assertModeNotRunning(mode)
+        self.machine.modes[mode].start()
+        self.machine_run()
+        self.assertModeRunning(mode)
+
+    def stop_mode(self, mode):
+        """Stop mode."""
+        self.assertModeRunning(mode)
+        self.machine.modes[mode].stop()
+        self.machine_run()
+        self.assertModeNotRunning(mode)
+
+    def get_config_file(self):
         """Return a string name of the machine config file to use for the tests
         in this class.
-        
+
         You should override this method in your own test class to point to the
         config file you need for your tests.
-        
+
         Returns:
             A string name of the machine config file to use, complete with the
             ``.yaml`` file extension.
-            
+
         For example:
-        
+
         .. code::
-        
-            def getConfigFile(self):
+
+            def get_config_file(self):
                 return 'my_config.yaml'
 
         """
         return 'null.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         """Return a string name of the path to the machine folder to use for
         the tests in this class.
 
         You should override this method in your own test class to point to the
         machine folder root you need for your tests.
-        
+
         Returns:
             A string name of the machine path to use
-            
+
         For example:
-        
+
         .. code::
-        
-            def getMachinePath(self):
+
+            def get_machine_path(self):
                 return 'tests/machine_files/my_test/'
 
         Note that this path is relative to the MPF package root
@@ -151,86 +216,110 @@ class MpfTestCase(unittest.TestCase):
         """
         return 'tests/machine_files/null/'
 
-    def getAbsoluteMachinePath(self):
+    def get_absolute_machine_path(self):
+        """Return absolute machine path."""
+        # check if there is a decorator
+        config_directory = getattr(getattr(self, self._testMethodName), "config_directory", None)
+        if not config_directory:
+            config_directory = self.get_machine_path()
+
         # creates an absolute path based on machine_path
         return os.path.abspath(os.path.join(
-            mpf.core.__path__[0], os.pardir, self.getMachinePath()))
+            mpf.core.__path__[0], os.pardir, config_directory))
 
-    def get_abs_path(self, path):
+    @staticmethod
+    def get_abs_path(path):
+        """Get absolute path relative to current directory."""
         return os.path.join(os.path.abspath(os.curdir), path)
 
     def post_event(self, event_name, run_time=0):
         """Post an MPF event and optionally advance the time.
-        
+
         Args:
             event_name: String name of the event to post
             run_time: How much time (in seconds) the test should advance
                 after this event has been posted.
-        
+
         For example, to post an event called "shot1_hit":
-        
+
         .. code::
-        
+
             self.post_event('shot1_hit')
-        
+
         To post an event called "tilt" and then advance the time 1.5 seconds:
-        
+
         .. code::
-        
+
             self.post_event('tilt', 1.5)
-        
+
         """
         self.machine.events.post(event_name)
         self.advance_time_and_run(run_time)
 
     def post_event_with_params(self, event_name, **params):
         """Post an MPF event with kwarg parameters.
-        
+
         Args:
             event_name: String name of the event to post
             **params: One or more kwarg key/value pairs to post with the event.
-        
+
         For example, to post an event called "jackpot" with the parameters
         ``count=1`` and ``first_time=True``, you would use:
-        
+
         .. code::
-        
+
             self.post_event('jackpot', count=1, first_time=True)
-        
+
         """
         self.machine.events.post(event_name, **params)
         self.machine_run()
 
+    def post_relay_event_with_params(self, event_name, **params):
+        """Post a relay event synchronously and return the result."""
+        future = self.machine.events.post_relay_async(event_name, **params)
+        result = self.machine.clock.loop.run_until_complete(future)
+        return result
+
+    def assertPlaceholderEvaluates(self, expected, condition):
+        """Assert that a placeholder evaluates to a certain value."""
+        result = self.machine.placeholder_manager.build_raw_template(condition).evaluate([],
+                                                                                         fail_on_missing_params=True)
+        self.assertEqual(expected, result, "{} = {} != {}".format(condition, result, expected))
+
+    def assertNumBallsKnown(self, balls):
+        """Assert that a certain number of balls are known in the machine."""
+        self.assertEqual(balls, self.machine.ball_controller.num_balls_known)
+
     def set_num_balls_known(self, balls):
         """Set the ball controller's ``num_balls_known`` attribute.
-        
+
         This is needed for tests where you don't have any ball devices and
         other situations where you need the ball controller to think the
         machine has a certain amount of balls to run a test.
-        
+
         Example:
-            
+
         .. code::
-        
+
             self.set_num_balls_known(3)
-        
-        
+
+
         """
         # in case the test does not have any ball devices
         self.machine.ball_controller.num_balls_known = balls
 
     def get_platform(self):
         """Force this test class to use a certain platform.
-        
+
         Returns:
             String name of the platform this test class will use.
-        
+
         If you don't include this method in your test class, the platform will
         be set to `virtual`. If you want to use the smart virtual platform,
         you would add the following to your test class:
-        
+
         .. code::
-        
+
             def get_platform(self):
                 return 'smart_virtual`
 
@@ -239,44 +328,53 @@ class MpfTestCase(unittest.TestCase):
 
     def get_use_bcp(self):
         """Control whether tests in this class should use BCP.
-        
+
         Returns: True or False
-        
+
         The default is False. To use BCP in your test class, add the following:
-         
+
          .. code::
-         
+
             def get_use_bcp(self):
                 return True
-        
+
         """
         return False
 
     def get_enable_plugins(self):
         """Control whether tests in this class should load MPF plugins.
-        
+
         Returns: True or False
-        
+
         The default is False. To load plugins in your test class, add the
         following:
-         
+
          .. code::
-         
+
             def get_enable_plugins(self):
                 return True
-        
+
         """
         return False
 
-    def getOptions(self):
+    def _get_config_file(self):
+        """Return test decorator value or the return of get_config_file."""
+        config_file = getattr(getattr(self, self._testMethodName), "config_file", None)
+        if config_file:
+            return config_file
+        else:
+            return self.get_config_file()
 
+    def get_options(self):
+        """Return options for the machine controller."""
         mpfconfig = os.path.abspath(os.path.join(
             mpf.core.__path__[0], os.pardir, 'mpfconfig.yaml'))
 
         return {
             'force_platform': self.get_platform(),
+            'production': False,
             'mpfconfigfile': mpfconfig,
-            'configfile': Util.string_to_list(self.getConfigFile()),
+            'configfile': Util.string_to_event_list(self._get_config_file()),
             'debug': True,
             'bcp': self.get_use_bcp(),
             'no_load_cache': False,
@@ -287,25 +385,25 @@ class MpfTestCase(unittest.TestCase):
     def advance_time_and_run(self, delta=1.0):
         """Advance the test clock and run anything that should run during that
         time.
-        
+
         Args:
             delta: How much time to advance the test clock by (in seconds)
-        
+
         This method will cause anything scheduled during the time to run,
         including things like delays, timers, etc.
-        
+
         Advancing the clock will happen in multiple small steps if things are
         scheduled to happen during this advance. For example, you can advance
         the clock 10 seconds like this:
-        
+
         .. code::
-        
+
             self.advance_time_and_run(10)
-        
+
         If there is a delay callback that is scheduled to happen in 2 seconds,
         then this method will advance the clock 2 seconds, process that delay,
         and then advance the remaining 8 seconds.
-        
+
         """
         self.machine.log.info("Advancing time by %s", delta)
         try:
@@ -317,27 +415,32 @@ class MpfTestCase(unittest.TestCase):
             except Exception:
                 pass
             if self._exception and "exception" in self._exception:
-                raise self._exception['exception']
+                exception = self._exception['exception']
+                self._exception = None
+                raise exception
             elif self._exception:
-                raise Exception(self._exception, e)
+                exception = self._exception['exception']
+                self._exception = None
+                raise Exception(exception, e)
             raise e
 
     def machine_run(self):
         """Process any delays, timers, or anything else scheduled.
-        
+
         Note this is the same as:
-        
+
         .. code::
-        
+
             self.advance_time_and_run(0)
-        
+
         """
         self.advance_time_and_run(0)
 
-    def unittest_verbosity(self):
+    @staticmethod
+    def unittest_verbosity():
         """Return the verbosity setting of the currently running unittest
         program, or 0 if none is running.
-        
+
         Returns: An integer value of the current verbosity setting.
 
         """
@@ -351,6 +454,7 @@ class MpfTestCase(unittest.TestCase):
         return 0
 
     def save_and_prepare_sys_path(self):
+        """Save sys path and prepare it for the test."""
         # save path
         self._sys_path = copy.deepcopy(sys.path)
 
@@ -367,7 +471,7 @@ class MpfTestCase(unittest.TestCase):
             sys.path.remove("")
 
     def restore_sys_path(self):
-        # restore sys path
+        """Restore sys path after test."""
         sys.path = self._sys_path
 
     def _get_mock_data(self):
@@ -375,6 +479,9 @@ class MpfTestCase(unittest.TestCase):
         return dict()
 
     def _mock_loop(self):
+        pass
+
+    def _early_machine_init(self, machine):
         pass
 
     def _exception_handler(self, loop, context):
@@ -386,6 +493,7 @@ class MpfTestCase(unittest.TestCase):
         self._exception = context
 
     def setUp(self):
+        """Setup test."""
         self._get_event_loop = asyncio.get_event_loop
         asyncio.get_event_loop = None
         self._get_event_loop2 = asyncio.events.get_event_loop
@@ -402,31 +510,46 @@ class MpfTestCase(unittest.TestCase):
         # print(threading.active_count())
 
         self.test_start_time = time.time()
-        if self.unittest_verbosity() > 1:
-            logging.basicConfig(level=logging.DEBUG,
-                                format='%(asctime)s : %(levelname)s : %('
-                                       'name)s : %(message)s')
-        else:
-            # no logging by default
-            logging.basicConfig(level=99)
-
         self.save_and_prepare_sys_path()
 
         # init machine
-        machine_path = self.getAbsoluteMachinePath()
+        machine_path = self.get_absolute_machine_path()
 
         self.loop = TimeTravelLoop()
         self.loop.set_exception_handler(self._exception_handler)
         self.clock = TestClock(self.loop)
         self._mock_loop()
 
+        if self.unittest_verbosity() > 1:
+            class LogRecordClock(logging.LogRecord):
+                def __init__(self_inner, *args, **kwargs):
+                    self_inner.created_clock = self.clock.get_time()
+                    super().__init__(*args, **kwargs)
+
+            logging.setLogRecordFactory(LogRecordClock)
+
+            console_log = logging.StreamHandler()
+            console_log.setLevel(logging.DEBUG)
+            console_log.setFormatter(MpfUnitTestFormatter(fmt='%(asctime)s : %(levelname)s : %('
+                                                              'name)s : %(message)s'))
+            logging.basicConfig(level=logging.DEBUG,
+                                handlers=[console_log])
+        else:
+            # no logging by default
+            logging.basicConfig(level=99)
+
+        # load config
+        config_loader = UnitTestConfigLoader(machine_path, [self._get_config_file()], self.machine_config_defaults,
+                                             self.machine_config_patches, self.machine_spec_patches)
+
+        config = config_loader.load_mpf_config()
+
         try:
             self.machine = TestMachineController(
-                os.path.abspath(os.path.join(
-                    mpf.core.__path__[0], os.pardir)), machine_path,
-                self.getOptions(), self.machine_config_patches, self.machine_config_defaults,
-                self.clock, self._get_mock_data(),
-                self.get_enable_plugins())
+                self.get_options(), config, self.machine_config_patches, self.machine_config_defaults,
+                self.clock, self._get_mock_data(), self.get_enable_plugins())
+
+            self._early_machine_init(self.machine)
 
             self._initialise_machine()
 
@@ -443,10 +566,10 @@ class MpfTestCase(unittest.TestCase):
             raise e
 
     def _initialise_machine(self):
-        init = Util.ensure_future(self.machine.initialise(), loop=self.loop)
+        init = asyncio.ensure_future(self.machine.initialise(), loop=self.loop)
         self._wait_for_start(init, 20)
         self.machine.events.process_event_queue()
-        self.advance_time_and_run(1)
+        self.advance_time_and_run(.001)
 
     def _wait_for_start(self, init, timeout):
         start = time.time()
@@ -464,71 +587,91 @@ class MpfTestCase(unittest.TestCase):
 
     def mock_event(self, event_name):
         """Configure an event to be mocked.
-        
+
         Args:
             event_name: String name of the event to mock.
-            
+
         Mocking an event is an easy way to check if an event was called without
         configuring some kind of callback action in your tests.
-        
+
         Note that an event must be mocked here *before* it's posted in order
         for :meth:`assertEventNotCalled` and :meth:`assertEventCalled` to work.
-        
+
         Mocking an event will not "break" it. In other words, any other
         registered handlers for this event will also be called even if the
         event has been mocked.
-        
+
         For example:
-        
+
         .. code::
-        
+
             self.mock_event('my_event')
             self.assertEventNotCalled('my_event')  # This will be True
             self.post_event('my_event')
             self.assertEventCalled('my_event')  # This will also be True
-        
+
         """
         self._events[event_name] = 0
+        self._last_event_kwargs.pop(event_name, None)
         self.machine.events.remove_handler_by_event(event=event_name, handler=self._mock_event_handler)
         self.machine.events.add_handler(event=event_name,
                                         handler=self._mock_event_handler,
                                         event_name=event_name)
 
     def assertBallsOnPlayfield(self, balls, playfield="playfield"):
-        self.assertEqual(balls, self.machine.playfields[playfield].balls)
+        """Assert that a certain number of ball is on a playfield."""
+        self.assertEqual(balls, self.machine.playfields[playfield].balls,
+                         "Playfield {} contains {} balls but should be {}".format(
+                             playfield, self.machine.playfields[playfield].balls, balls))
 
     def assertAvailableBallsOnPlayfield(self, balls, playfield="playfield"):
+        """Assert that a certain number of ball is available on a playfield."""
         self.assertEqual(balls, self.machine.playfields[playfield].available_balls)
 
     def assertMachineVarEqual(self, value, machine_var):
-        self.assertTrue(self.machine.is_machine_var(machine_var), "Machine Var {} does not exist.".format(machine_var))
-        self.assertEqual(value, self.machine.get_machine_var(machine_var))
+        """Assert that a machine variable exists and has a certain value."""
+        self.assertTrue(self.machine.variables.is_machine_var(machine_var), "Machine Var {} does not exist.".format(machine_var))
+        self.assertEqual(value, self.machine.variables.get_machine_var(machine_var))
 
     def assertPlayerVarEqual(self, value, player_var):
+        """Assert that a player variable exists and has a certain value."""
         self.assertIsNotNone(self.machine.game, "There is no game.")
         self.assertEqual(value, self.machine.game.player[player_var], "Value of player var {} is {} but should be {}".
                          format(player_var, self.machine.game.player[player_var], value))
 
     def assertSwitchState(self, name, state):
-        self.assertIn(name, self.machine.switch_controller.switches, "Switch {} does not exist.".format(name))
-        self.assertEqual(state, self.machine.switch_controller.is_active(name))
+        """Assert that a switch exists and has a certain state."""
+        self.assertIn(name, self.machine.switches, "Switch {} does not exist.".format(name))
+        self.assertEqual(state, self.machine.switch_controller.is_active(self.machine.switches[name]),
+                         "Switch {} is in state {} != {}".format(
+                             name, self.machine.switch_controller.is_active(self.machine.switches[name]), state))
 
     def assertLightChannel(self, light_name, brightness, channel="white"):
-        self.assertAlmostEqual(brightness / 255.0, self.machine.lights[light_name].hw_drivers[channel].
+        """Assert that a light channel has a certain brightness."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
+        self.assertAlmostEqual(brightness / 255.0, self.machine.lights[light_name].hw_drivers[channel][0].
                                current_brightness)
 
     def assertNotLightChannel(self, light_name, brightness, channel="white"):
-        self.assertNotEqual(brightness, self.machine.lights[light_name].hw_drivers[channel].
+        """Assert that a light channel does not have a certain brightness."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
+        self.assertNotEqual(brightness, self.machine.lights[light_name].hw_drivers[channel][0].
                             current_brightness)
 
     def assertLightColor(self, light_name, color):
+        """Assert that a light exists and shows one color."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         if isinstance(color, str) and color.lower() == 'on':
             color = self.machine.lights[light_name].config['default_on_color']
 
         self.assertEqual(RGBColor(color), self.machine.lights[light_name].get_color(),
-                         "{} != {}".format(RGBColor(color).name, self.machine.lights[light_name].get_color().name))
+                         "Light {}: {} != {}. Stack: {}".format(
+                             light_name, RGBColor(color).name, self.machine.lights[light_name].get_color().name,
+                             self.machine.lights[light_name].stack))
 
     def assertNotLightColor(self, light_name, color):
+        """Assert that a light exists and does not show a certain color."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         if isinstance(color, str) and color.lower() == 'on':
             color = self.machine.lights[light_name].config['default_on_color']
 
@@ -536,6 +679,8 @@ class MpfTestCase(unittest.TestCase):
                             "{} == {}".format(RGBColor(color).name, self.machine.lights[light_name].get_color().name))
 
     def assertLightColors(self, light_name, color_list, secs=1, check_delta=.1):
+        """Assert that a light exists and shows all colors in a list over a period."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         colors = list()
 
         # have to do it this weird way because `if 'on' in color_list:` doesn't
@@ -555,14 +700,20 @@ class MpfTestCase(unittest.TestCase):
             self.assertIn(RGBColor(color), colors)
 
     def assertLightOn(self, light_name):
+        """Assert that a light exists and is on."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         self.assertEqual(255,
                          self.machine.lights[
                              light_name].hw_driver.current_brightness)
 
     def assertLightOff(self, light_name):
+        """Assert that a light exists and is off."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         self.assertEqual(0, self.machine.lights[light_name].hw_driver.current_brightness)
 
     def assertLightFlashing(self, light_name, color=None, secs=1, check_delta=.1):
+        """Assert that a light exists and is flashing."""
+        self.assertIn(light_name, self.machine.lights, "Light {} does not exist".format(light_name))
         brightness_values = list()
         if not color:
             color = [255, 255, 255]
@@ -576,12 +727,14 @@ class MpfTestCase(unittest.TestCase):
         self.assertIn(color, brightness_values)
 
     def assertModeRunning(self, mode_name):
+        """Assert that a mode exists and is running."""
         if mode_name not in self.machine.modes:
             raise AssertionError("Mode {} not known.".format(mode_name))
         self.assertIn(self.machine.modes[mode_name], self.machine.mode_controller.active_modes,
                       "Mode {} not running.".format(mode_name))
 
     def assertModeNotRunning(self, mode_name):
+        """Assert that a mode exists and is not running."""
         if mode_name not in self.machine.modes:
             raise AssertionError("Mode {} not known.".format(mode_name))
         self.assertNotIn(self.machine.modes[mode_name], self.machine.mode_controller.active_modes,
@@ -589,42 +742,43 @@ class MpfTestCase(unittest.TestCase):
 
     def assertEventNotCalled(self, event_name):
         """Assert that event was not called.
-        
+
         Args:
             event_name: String name of the event to check.
-        
+
         Note that the event must be mocked via ``self.mock_event()`` first in
         order to use this method.
-        
+
         """
         if event_name not in self._events:
             raise AssertionError("Event {} not mocked.".format(event_name))
 
         if self._events[event_name] != 0:
-            raise AssertionError("Event {} was called {} times.".format(event_name, self._events[event_name]))
+            raise AssertionError("Event {} was called {} times but was not expected to "
+                                 "be called.".format(event_name, self._events[event_name]))
 
     def assertEventCalled(self, event_name, times=None):
         """Assert that event was called.
-        
+
         Args:
             event_name: String name of the event to check.
             times: An optional value to confirm the number of times the event
                 was called. Default of *None* means this method will pass as
                 long as the event has been called at least once.
-        
+
         If you want to reset the ``times`` count, you can mock the event
         again.
-        
+
         Note that the event must be mocked via ``self.mock_event()`` first in
         order to use this method.
 
         For example:
-        
+
         .. code::
-        
+
             self.mock_event('my_event')
             self.assertEventNotCalled('my_event')  # This will pass
-            
+
             self.post_event('my_event')
             self.assertEventCalled('my_event')     # This will pass
             self.assertEventCalled('my_event', 1)  # This will pass
@@ -638,138 +792,48 @@ class MpfTestCase(unittest.TestCase):
             raise AssertionError("Event {} not mocked.".format(event_name))
 
         if self._events[event_name] == 0 and times != 0:
-            raise AssertionError("Event {} was not called.".format(event_name))
+            if times is None:
+                raise AssertionError("Event {} was not called.".format(event_name))
+
+            raise AssertionError("Event {} was not called but we expected {} calls.".format(event_name, times))
 
         if times is not None and self._events[event_name] != times:
-            raise AssertionError("Event {} was called {} instead of {}.".format(
+            raise AssertionError("Event {} was called {} times instead of {} times expected.".format(
                 event_name, self._events[event_name], times))
 
     def assertEventCalledWith(self, event_name, **kwargs):
         """Assert an event was called with certain kwargs.
-        
+
         Args:
             event_name: String name of the event to check.
             **kwargs: Name/value parameters to check.
-            
+
         For example:
-        
+
         .. code::
-        
+
             self.mock_event('jackpot')
-        
+
             self.post_event('jackpot', count=1, first_time=True)
             self.assertEventCalled('jackpot')  # This will pass
             self.assertEventCalledWith('jackpot', count=1, first_time=True)  # This will also pass
             self.assertEventCalledWith('jackpot', count=1, first_time=False)  # This will fail
 
-        
+
         """
         self.assertEventCalled(event_name)
         self.assertEqual(kwargs, self._last_event_kwargs[event_name], "Args for {} differ.".format(event_name))
 
-    def assertShotShow(self, shot_name, show_name):
-        """Assert that the highest priority running show for a shot is a
-        certain show name.
-        
-        Args:
-            shot_name: String name of the shot.
-            show_name: String name of the show.
-        
-        """
-        if shot_name not in self.machine.shots:
-            raise AssertionError("Shot {} is not a valid shot".format(shot_name))
-
-        if show_name:
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles)
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles[0]['running_show'])
-            self.assertEqual(show_name, self.machine.shots[shot_name].profiles[0]['running_show'].name)
-        else:
-            self.assertIsNone(self.machine.shots[shot_name].profiles[0]['running_show'])
-
-    def assertShotProfile(self, shot_name, profile_name):
-        """Assert that the highest priority profile for a shot is a
-        certain profile name.
-        
-        Args:
-            shot_name: String name of the shot.
-            profile_name: String name of the profile.
-        
-        """
-        if shot_name not in self.machine.shots:
-            raise AssertionError("Shot {} is not a valid shot".format(shot_name))
-
-        if profile_name:
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles)
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles[0]['profile'])
-            self.assertEqual(profile_name, self.machine.shots[shot_name].profiles[0]['profile'])
-        else:
-            self.assertIsNone(self.machine.shots[shot_name].profiles[0]['profile'])
-
-    def assertShotProfileState(self, shot_name, state_name):
-        """Assert that the highest priority profile for a shot is in a certain
-        state.
-        
-        Args:
-            shot_name: String name of the shot.
-            state_name: String name of the state.
-        
-        """
-        if shot_name not in self.machine.shots:
-            raise AssertionError("Shot {} is not a valid shot".format(shot_name))
-
-        if state_name:
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles)
-            self.assertIsNotNone(self.machine.shots[shot_name].profiles[0]['current_state_name'])
-            self.assertEqual(state_name, self.machine.shots[shot_name].profiles[0]['current_state_name'])
-        else:
-            self.assertIsNone(self.machine.shots[shot_name].profiles[0]['current_state_name'])
-
-    def assertShotEnabled(self, shot_name):
-        """Assert that a shot is enabled.
-        
-        Args:
-            shot_name: String name of the shot.
-        
-        """
-        if shot_name not in self.machine.shots:
-            raise AssertionError("Shot {} is not a valid shot".format(shot_name))
-
-        self.assertTrue(self.machine.shots[shot_name].profiles[0]['enable'])
-
-    def assertShowRunning(self, show_name):
-        """Assert that at least one instance of a show is currently running.
-        
-        Args:
-            show_name: String name of the show to check.
-        
-        """
-        for running_show in self.machine.show_controller.running_shows:
-            if self.machine.shows[show_name] == running_show.show:
-                return
-
-        self.fail("Show {} not running".format(show_name))
-
-    def assertShowNotRunning(self, show_name):
-        """Assert that there are no running instances of a show.
-        
-        Args:
-            show_name: String name of the show to check.
-        
-        """
-        for running_show in self.machine.show_controller.running_shows:
-            if self.machine.shows[show_name] == running_show.show:
-                self.fail("Show {} should not be running".format(show_name))
-
     def assertColorAlmostEqual(self, color1, color2, delta=6):
         """Assert that two color are almost equal.
-        
+
         Args:
             color1: The first color, as an RGBColor instance or 3-item iterable.
             color2: The second color, as an RGBColor instance or 3-item iterable.
             delta: How close the colors have to be. The deltas between red,
                 green, and blue are added together and must be less or equal
                 to this value for this assertion to succeed.
-        
+
         """
         if isinstance(color1, RGBColor) and isinstance(color2, RGBColor):
             difference = abs(color1.red - color2.red) +\
@@ -781,78 +845,81 @@ class MpfTestCase(unittest.TestCase):
                 abs(color1[2] - color2[2])
         self.assertLessEqual(difference, delta, "Colors do not match: " + str(color1) + " " + str(color2))
 
-    def get_timer(self, timer):
-        """Return a timer object from a mode based on a name.
-        
-        Args:
-            timer: String name of the timer to look for.
-        
-        Returns:
-            A Timer object.
-        
-        Raises:
-            AssertionError if the timer does not exist.
-        
-        """
-        for mode in self.machine.modes:
-            for t in mode.timers:
-                if t == timer:
-                    return mode.timers[t]
-
-        raise AssertionError("Timer {} not found".format(timer))
-
     def reset_mock_events(self):
         """Reset all mocked events.
-        
+
         This will reset the count of number of times called every mocked
         event is.
-        
+
         """
         for event in self._events.keys():
             self._events[event] = 0
 
     def hit_switch_and_run(self, name, delta):
         """Activates a switch and advances the time.
-        
+
         Args:
             name: The name of the switch to activate.
             delta: The time (in seconds) to advance the clock.
-        
+
         Note that this method does not deactivate the switch once the time
         has been advanced, meaning the switch stays active. To make the
         switch inactive, use the :meth:`release_switch_and_run`.
-        
+
         """
-        self.machine.switch_controller.process_switch(name, 1, True)
+        self.machine.switch_controller.process_switch(name, state=1, logical=True)
         self.advance_time_and_run(delta)
 
     def release_switch_and_run(self, name, delta):
         """Deactivates a switch and advances the time.
-        
+
         Args:
             name: The name of the switch to activate.
             delta: The time (in seconds) to advance the clock.
-        
+
         """
-        self.machine.switch_controller.process_switch(name, 0, True)
+        self.machine.switch_controller.process_switch(name, state=0, logical=True)
         self.advance_time_and_run(delta)
 
     def hit_and_release_switch(self, name):
         """Momentarily activates and then deactivates a switch.
-        
+
         Args:
             name: The name of the switch to hit.
-        
+
         This method immediately activates and deactivates a switch with no
         time in between.
-        
+
         """
-        self.machine.switch_controller.process_switch(name, 1, True)
-        self.machine.switch_controller.process_switch(name, 0, True)
+        self.machine.switch_controller.process_switch(name, state=1, logical=True)
+        self.machine.switch_controller.process_switch(name, state=0, logical=True)
+        self.machine_run()
+
+    def hit_and_release_switches_simultaneously(self, names):
+        """Momentarily activates and then deactivates multiple switches.
+
+        Switches are hit sequentially and then released sequentially.
+        Events are only processed at the end of the sequence which is useful
+        to reproduce race conditions when processing nearly simultaneous hits.
+
+        Args:
+            names: The names of the switches to hit and release.
+
+        """
+        for name in names:
+            self.machine.switch_controller.process_switch(name, state=1, logical=True)
+        for name in names:
+            self.machine.switch_controller.process_switch(name, state=0, logical=True)
         self.machine_run()
 
     def tearDown(self):
+        """Tear down test."""
         if self._exception:
+            try:
+                self.machine.shutdown()
+            except:
+                pass
+
             if self._exception and 'exception' in self._exception:
                 raise self._exception['exception']
             elif self._exception:
@@ -871,9 +938,7 @@ class MpfTestCase(unittest.TestCase):
         else:
             # fire all delays
             self.advance_time_and_run(300)
-        self.machine.stop()
         self.machine._do_stop()
-        self.machine.clock.loop.close()
         self.machine = None
 
         self.restore_sys_path()
@@ -882,10 +947,7 @@ class MpfTestCase(unittest.TestCase):
         events.get_event_loop = self._get_event_loop2
         self._get_event_loop2 = None
 
-    def add_to_config_validator(self, key, new_dict):
-        if mpf.core.config_validator.ConfigValidator.config_spec:
-            mpf.core.config_validator.ConfigValidator.config_spec[key] = (
-                new_dict)
-        else:
-            mpf.core.config_validator.mpf_config_spec += '\n' + yaml.dump(
-                {key: new_dict}, default_flow_style=False)
+    @staticmethod
+    def add_to_config_validator(machine, key, new_dict):
+        """Add config dict to validator."""
+        machine.config_validator.get_config_spec()[key] = new_dict

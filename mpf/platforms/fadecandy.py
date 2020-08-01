@@ -1,5 +1,4 @@
 """Contains code for an FadeCandy hardware for RGB LEDs."""
-import asyncio
 import logging
 import json
 import struct
@@ -10,12 +9,14 @@ from mpf.platforms.openpixel import OpenpixelHardwarePlatform
 
 MYPY = False
 if MYPY:   # pragma: no cover
-    from mpf.core.machine import MachineController
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
 
 
 class FadecandyHardwarePlatform(OpenpixelHardwarePlatform):
 
     """Base class for the FadeCandy hardware platform."""
+
+    __slots__ = []
 
     def __init__(self, machine: "MachineController") -> None:
         """Initialise Fadecandy.
@@ -26,16 +27,15 @@ class FadecandyHardwarePlatform(OpenpixelHardwarePlatform):
         super().__init__(machine)
 
         self.log = logging.getLogger("FadeCandy")
-        self.debug_log("Configuring FadeCandy hardware interface.")
+        self.log.debug("Configuring FadeCandy hardware interface.")
 
     def __repr__(self):
         """Return string representation."""
         return '<Platform.FadeCandy>'
 
-    @asyncio.coroutine
-    def _setup_opc_client(self):
+    async def _setup_opc_client(self):
         self.opc_client = FadeCandyOPClient(self.machine, self.machine.config['open_pixel_control'])
-        yield from self.opc_client.connect()
+        await self.opc_client.connect()
 
 
 class FadeCandyOPClient(OpenPixelClient):
@@ -46,6 +46,9 @@ class FadeCandyOPClient(OpenPixelClient):
     available with generic OPC implementations.
 
     """
+
+    __slots__ = ["gamma", "whitepoint", "linear_slope", "linear_cutoff", "keyframe_interpolation", "dithering",
+                 "config"]
 
     def __init__(self, machine, config):
         """Initialise Fadecandy client.
@@ -65,7 +68,7 @@ class FadeCandyOPClient(OpenPixelClient):
                                                                     self.machine.config['fadecandy'])
 
         self.gamma = self.config['gamma']
-        self.whitepoint = Util.string_to_list(self.config['whitepoint'])
+        self.whitepoint = Util.string_to_event_list(self.config['whitepoint'])
 
         self.whitepoint[0] = float(self.whitepoint[0])
         self.whitepoint[1] = float(self.whitepoint[1])
@@ -79,10 +82,9 @@ class FadeCandyOPClient(OpenPixelClient):
         if not self.keyframe_interpolation:
             self.update_every_tick = False
 
-    @asyncio.coroutine
-    def connect(self):
+    async def connect(self):
         """Connect to the hardware."""
-        yield from super().connect()
+        await super().connect()
         self.set_global_color_correction()
         self.write_firmware_options()
 

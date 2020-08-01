@@ -17,6 +17,8 @@ class ExtraBall(ModeDevice):
     collection = 'extra_balls'
     class_label = 'extra_ball'
 
+    __slots__ = ["player", "group"]
+
     def __init__(self, machine: MachineController, name: str) -> None:
         """Initialise extra ball."""
         super().__init__(machine, name)
@@ -28,18 +30,23 @@ class ExtraBall(ModeDevice):
     @property
     def enabled(self):
         """Return whether this extra ball group is enabled.
-        
+
         This takes into consideration the enabled setting plus the max balls
         per game setting.
         """
         return self.is_ok_to_award()
 
-    def _initialize(self):
-        super()._initialize()
+    async def _initialize(self):
+        await super()._initialize()
         self.group = self.config['group']
 
     @event_handler(2)
-    def light(self, **kwargs):
+    def event_light(self, **kwargs):
+        """Handle light control event."""
+        del kwargs
+        self.light()
+
+    def light(self):
         """Light an extra ball for potential collection by the player.
 
         Lighting an extra ball will immediately increase count against the
@@ -50,8 +57,6 @@ class ExtraBall(ModeDevice):
         Note that this only really does anything if this extra ball is a
         member of a group.
         """
-        del kwargs
-
         if self.is_ok_to_light():
             self.machine.events.post('extra_ball_{}_lit'.format(self.name))
             '''event: extra_ball_(name)_lit
@@ -64,10 +69,13 @@ class ExtraBall(ModeDevice):
             self._award_disabled()
 
     @event_handler(1)
-    def award(self, **kwargs):
-        """Award extra ball to player (if enabled)."""
+    def event_award(self, **kwargs):
+        """Handle award control event."""
         del kwargs
+        self.award()
 
+    def award(self):
+        """Award extra ball to player (if enabled)."""
         if self.is_ok_to_award():
             self.player['extra_ball_{}_num_awarded'.format(self.name)] += 1
             self.machine.events.post('extra_ball_{}_awarded'.format(self.name))
@@ -88,15 +96,14 @@ class ExtraBall(ModeDevice):
         else:  # EB cannot be awarded
             self._award_disabled()
 
-    def is_ok_to_light(self):
+    def is_ok_to_light(self) -> bool:
         """Check whether this extra ball can be lit.
 
         This method takes into consideration whether this extra ball is
         enabled, and, if this extra ball is a member of a group, whether the
         group is enabled and will allow an additional extra ball to lit.
 
-        Returns:
-            True or False
+        Returns True or False.
         """
         if self.is_ok_to_award():
             if self.group:
@@ -107,7 +114,7 @@ class ExtraBall(ModeDevice):
 
         return False
 
-    def is_ok_to_award(self):
+    def is_ok_to_award(self) -> bool:
         """Check whether this extra ball can be awarded.
 
         This method takes into consideration whether this extra ball is
@@ -115,22 +122,20 @@ class ExtraBall(ModeDevice):
         extra ball is a member of a group, whether the group is enabled and
         will allow an additional extra ball to be awarded.
 
-        Returns:
-            True or False
+        Returns True or False.
         """
-        if not self.config['enabled']:
+        if not self.config['enabled'] or not self.player:
             return False
 
         if self.group and not self.group.enabled:
             return False
 
-        elif self.config['max_per_game'] and (
+        if self.config['max_per_game'] and (
                 self.config['max_per_game'] <=
                 self.player['extra_ball_{}_num_awarded'.format(self.name)]):
             return False
 
-        else:
-            return True
+        return True
 
     def _award_disabled(self):
         self.machine.events.post('extra_ball_award_disabled')

@@ -9,18 +9,25 @@ from asyncio.selector_events import _SelectorSocketTransport
 
 import asyncio
 
+import time
+
 from mpf.core.clock import ClockBase
 from serial_asyncio import SerialTransport
 
 
 class NextTimers:
+
+    """Next timers."""
+
+    __slots__ = ["_timers_set", "_timers_heap"]
+
     def __init__(self):
         # Timers set. Used to check uniqueness:
         self._timers_set = set()
         # Timers heap. Used to get the closest timer event:
         self._timers_heap = []
 
-    def add(self,when):
+    def add(self, when):
         """
         Add a timer (Future event).
         """
@@ -31,7 +38,7 @@ class NextTimers:
         # Add to set:
         self._timers_set.add(when)
         # Add to heap:
-        heapq.heappush(self._timers_heap,when)
+        heapq.heappush(self._timers_heap, when)
 
     def is_empty(self):
         return (len(self._timers_set) == 0)
@@ -48,8 +55,13 @@ class NextTimers:
 
         return when
 
+    def __repr__(self):
+        return str(self._timers_set)
 
 class _TestTransport:
+
+    __slots__ = ["_loop", "_sock"]
+
     def __init__(self, loop, sock):
         self._loop = loop
         self._sock = sock
@@ -66,26 +78,44 @@ class _TestTransport:
 
 
 class MockFd:
+
+    __slots__ = ["is_open"]
+
     def __init__(self):
         self.is_open = False
 
+    def open(self):
+        if self.is_open:
+            raise AssertionError("Serial already open")
+        self.is_open = True
+
     def read_ready(self):
+        if not self.is_open:
+            raise AssertionError("Serial not open")
         return False
 
     def send(self, data):
+        if not self.is_open:
+            raise AssertionError("Serial not open")
         return len(data)
 
     def fileno(self):
         return self
 
     def write_ready(self):
+        if not self.is_open:
+            raise AssertionError("Serial not open")
         return False
 
     def close(self):
+        self.is_open = False
         return
 
 
 class MockSocket(MockFd):
+
+    __slots__ = ["family", "type", "proto", "__dict__"]
+
     def __init__(self):
         super().__init__()
         self.family = socket.AF_INET
@@ -106,6 +136,9 @@ class MockSocket(MockFd):
 
 
 class MockQueueSocket(MockSocket):
+
+    __slots__ = ["send_queue", "recv_queue"]
+
     def __init__(self, loop):
         super().__init__()
         self.send_queue = asyncio.Queue(loop=loop)
@@ -126,18 +159,19 @@ class MockQueueSocket(MockSocket):
 
 
 class MockServer:
+
+    __slots__ = ["loop", "is_bound", "client_connected_cb"]
+
     def __init__(self, loop):
         self.loop = loop
         self.is_bound = asyncio.Future(loop=loop)
         self.client_connected_cb = None
 
-    @asyncio.coroutine
-    def bind(self, client_connected_cb):
+    async def bind(self, client_connected_cb):
         self.client_connected_cb = client_connected_cb
         self.is_bound.set_result(True)
 
-    @asyncio.coroutine
-    def add_client(self, socket):
+    async def add_client(self, socket):
         if not self.is_bound.done():
             raise AssertionError("Server not running")
 
@@ -146,17 +180,18 @@ class MockServer:
         protocol = asyncio.streams.StreamReaderProtocol(reader, loop=self.loop)
         transport = _SelectorSocketTransport(self.loop, socket, protocol)
         writer = asyncio.streams.StreamWriter(transport, protocol, reader, self.loop)
-        yield from self.client_connected_cb(reader, writer)
+        await self.client_connected_cb(reader, writer)
 
     def close(self):
         pass
 
-    @asyncio.coroutine
-    def wait_closed(self):
+    async def wait_closed(self):
         return True
 
 
 class MockSerial(MockFd):
+
+
     def __init__(self):
         super().__init__()
         self.fd = self
@@ -166,6 +201,9 @@ class MockSerial(MockFd):
         pass
 
     def nonblocking(self):
+        pass
+
+    def flush(self):
         pass
 
     @property
@@ -187,6 +225,9 @@ class MockSerial(MockFd):
 
 
 class TestSelector(selectors.BaseSelector):
+
+    __slots__ = ["keys"]
+
     def __init__(self):
         self.keys = {}
 
@@ -220,6 +261,9 @@ class TimeTravelLoop(base_events.BaseEventLoop):
     happen in the correct order.
     """
 
+    __slots__ = ["readers", "writers", "_time", "_clock_resolution", "_timers", "_selector", "_transports",
+                 "_wait_for_external_executor", "_stopped"]
+
     def __init__(self):
         self.readers = {}
         self.writers = {}
@@ -227,11 +271,13 @@ class TimeTravelLoop(base_events.BaseEventLoop):
         super().__init__()
 
         self._time = 0
+        self._stopped = False
         self._clock_resolution = 1e-9
         self._timers = NextTimers()
         self._selector = TestSelector()
         self._transports = {}   # needed for newer asyncio on windows
         self.reset_counters()
+        self._wait_for_external_executor = False
 
     def time(self):
         return self._time
@@ -263,6 +309,11 @@ class TimeTravelLoop(base_events.BaseEventLoop):
                                   (handle, writer))
             if reader is not None:
                 reader.cancel()
+
+    def stop(self):
+        """Stop loop."""
+        self._stopped = True
+        super().stop()
 
     def _remove_reader(self, fd):
         return self.remove_reader(fd)
@@ -351,12 +402,19 @@ class TimeTravelLoop(base_events.BaseEventLoop):
         if len(self._ready) == 0:
             if not self._timers.is_empty():
                 self._time = self._timers.pop_closest()
+            elif not self._closed and not self._stopped and not self._selector.select(0) and \
+                    not self._wait_for_external_executor:
+                raise AssertionError("Ran into an infinite loop. No socket ready and nothing scheduled.")
+            if self._wait_for_external_executor:
+                time.sleep(.0001)
 
         super()._run_once()
+        if self._wait_for_external_executor:
+            self._waiting_since = None
 
-    def call_at(self, when, callback, *args):
+    def call_at(self, when, callback, *args, **kwargs):
         self._timers.add(when)
-        return super().call_at(when, callback, *args)
+        return super().call_at(when, callback, *args, **kwargs)
 
     def _process_events(self, event_list):
         for key, mask in event_list:
@@ -377,6 +435,8 @@ class TimeTravelLoop(base_events.BaseEventLoop):
 
 
 class TestClock(ClockBase):
+
+    __slots__ = ["_test_loop", "_mock_sockets", "_mock_servers", "_mock_serials"]
 
     def __init__(self, loop):
         self._test_loop = loop
@@ -407,8 +467,7 @@ class TestClock(ClockBase):
         socket.is_open = True
         return socket
 
-    @asyncio.coroutine
-    def start_server(self, client_connected_cb, host=None, port=None, **kwd):
+    async def start_server(self, client_connected_cb, host=None, port=None, **kwd):
         """Mock listening server."""
         key = host + ":" + str(port)
         if key not in self._mock_servers:
@@ -417,7 +476,7 @@ class TestClock(ClockBase):
         if server.is_bound.done():
             raise AssertionError("server already bound for key {}".format(key))
 
-        yield from server.bind(client_connected_cb)
+        await server.bind(client_connected_cb)
         return server
 
     @coroutine
@@ -453,15 +512,16 @@ class TestClock(ClockBase):
         """Mock a socket and use it for connections."""
         self._mock_serials[url] = serial
 
-    def _open_mock_serial(self, url):
+    def _open_mock_serial(self, url, do_not_open):
         key = url
         if key not in self._mock_serials:
             raise AssertionError("serial not mocked for key {}".format(key))
         serial = self._mock_serials[key]
-        if serial.is_open:
-            raise AssertionError("serial already open for key {}".format(key))
+        if not do_not_open:
+            if serial.is_open:
+                raise AssertionError("serial already open for key {}".format(key))
 
-        serial.is_open = True
+            serial.is_open = True
         return serial
 
     @coroutine
@@ -484,6 +544,7 @@ class TestClock(ClockBase):
 
         reader = asyncio.StreamReader(limit=limit, loop=self.loop)
         protocol = asyncio.StreamReaderProtocol(reader, loop=self.loop)
-        transport = SerialTransport(self.loop, protocol, self._open_mock_serial(kwargs['url']))
+        transport = SerialTransport(self.loop, protocol, self._open_mock_serial(kwargs['url'],
+                                                                                kwargs.get("do_not_open", False)))
         writer = asyncio.StreamWriter(transport, protocol, reader, self.loop)
         return reader, writer

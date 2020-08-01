@@ -7,6 +7,8 @@ class FastServo(ServoPlatformInterface):
 
     """A servo in the FAST platform."""
 
+    __slots__ = ["number", "net_connection"]
+
     def __init__(self, number, net_connection):
         """Initialise servo."""
         self.number = number
@@ -25,3 +27,9 @@ class FastServo(ServoPlatformInterface):
             Util.int_to_hex_string(position_numeric))
 
         self.net_connection.send(cmd)
+
+    def set_speed_limit(self, speed_limit):
+        """Not implemented."""
+
+    def set_acceleration_limit(self, acceleration_limit):
+        """Not implemented."""

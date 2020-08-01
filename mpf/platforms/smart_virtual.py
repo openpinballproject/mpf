@@ -1,32 +1,36 @@
 """Contains code for the smart_virtual platform."""
-import asyncio
+import abc
 import logging
 
+from typing import List
 from mpf.core.logging import LogMixin
 from mpf.core.platform import DriverConfig
+from mpf.devices.ball_device.enable_coil_ejector import EnableCoilEjector
+from mpf.devices.ball_device.hold_coil_ejector import HoldCoilEjector
+from mpf.devices.ball_device.pulse_coil_ejector import PulseCoilEjector
 
 from mpf.platforms.interfaces.driver_platform_interface import PulseSettings, HoldSettings
 
 from mpf.core.delays import DelayManager
 from mpf.platforms.virtual import (VirtualHardwarePlatform as VirtualPlatform, VirtualDriver)
 
-
 MYPY = False
 if MYPY:   # pragma: no cover
-    from typing import Dict
-    from mpf.devices.ball_device.ball_device import BallDevice
+    from typing import Dict     # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.devices.ball_device.ball_device import BallDevice  # pylint: disable-msg=cyclic-import,unused-import
+    from mpf.core.machine import MachineController  # pylint: disable-msg=cyclic-import,unused-import
 
 
-class BaseSmartVirtualCoilAction:
+class BaseSmartVirtualCoilAction(metaclass=abc.ABCMeta):
 
     """A action for a coil."""
 
-    def __init__(self, actions, machine):
+    def __init__(self, actions: List[str], machine: "MachineController") -> None:
         """Initialise switch enable action."""
         self.log = logging.getLogger("SmartVirtual Coil Action")
         self.actions = actions
         self.machine = machine
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
         self.machine.config['smart_virtual'] = self.machine.config_validator.validate_config(
             "smart_virtual", self.machine.config.get('smart_virtual', {}))
 
@@ -36,8 +40,8 @@ class BaseSmartVirtualCoilAction:
         if "enable" in self.actions:
             self._perform_action()
             return True
-        else:
-            return False
+
+        return False
 
     def disable(self, coil):
         """Disable driver."""
@@ -45,8 +49,8 @@ class BaseSmartVirtualCoilAction:
         if "disable" in self.actions:
             self._perform_action()
             return True
-        else:
-            return False
+
+        return False
 
     def pulse(self, coil, milliseconds):
         """Pulse driver."""
@@ -55,12 +59,12 @@ class BaseSmartVirtualCoilAction:
         if "pulse" in self.actions:
             self._perform_action()
             return True
-        else:
-            return False
 
+        return False
+
+    @abc.abstractmethod
     def _perform_action(self):
         """Implement your action here."""
-        pass
 
 
 class ResetDropTargetAction(BaseSmartVirtualCoilAction):
@@ -79,7 +83,7 @@ class ResetDropTargetAction(BaseSmartVirtualCoilAction):
         # single reset coil we assume that coil will reset all the drop targets
         # anytime it's called.
         for target in self.drop_target_bank.config['drop_targets']:
-            self.machine.switch_controller.process_switch(target.config['switch'].name, 0, logical=True)
+            self.machine.switch_controller.process_switch_obj(target.config['switch'], 0, logical=True)
 
     def _perform_action(self):
         self.delay.add(ms=50, callback=self._hit_switches)
@@ -97,7 +101,7 @@ class SwitchDisableAction(BaseSmartVirtualCoilAction):
     def _hit_switches(self):
         for switch in self.switches:
             self.log.debug("Disabling switch %s due to coil pulse", switch)
-            self.machine.switch_controller.process_switch(switch.name, 0, logical=True)
+            self.machine.switch_controller.process_switch_obj(switch, 0, logical=True)
 
     def _perform_action(self):
         self.delay.add(ms=50, callback=self._hit_switches)
@@ -109,8 +113,8 @@ class SwitchEnableAction(SwitchDisableAction):
 
     def _hit_switches(self):
         for switch in self.switches:
-            self.log.debug("Enabling switch {} due to coil pulse".format(switch.name))
-            self.machine.switch_controller.process_switch(switch.name, 1, logical=True)
+            self.log.debug("Enabling switch %s due to coil pulse", switch.name)
+            self.machine.switch_controller.process_switch_obj(switch, 1, logical=True)
 
 
 class ScoreReelAdvanceAction(BaseSmartVirtualCoilAction):
@@ -146,8 +150,11 @@ class ScoreReelAdvanceAction(BaseSmartVirtualCoilAction):
         for position, switch in self.switch_map.items():
             if not switch:
                 continue
-            self.machine.switch_controller.process_switch(switch.name, 1 if self.position == position else 0,
-                                                          logical=True)
+
+            state = self.position == position
+
+            if not self.machine.switch_controller.is_state(switch, state):
+                self.machine.switch_controller.process_switch_obj(switch, state, logical=True)
 
 
 class AddBallToTargetAction(BaseSmartVirtualCoilAction):
@@ -167,13 +174,13 @@ class AddBallToTargetAction(BaseSmartVirtualCoilAction):
 
     def confirm_eject_via_switch(self, switch):
         """Simulate eject via switch."""
-        self.log.debug('Confirming eject via switch: {}'.format(switch.name))
-        self.machine.switch_controller.process_switch(switch.name, 1, logical=True)
+        self.log.debug('Confirming eject via switch: %s', switch.name)
+        self.machine.switch_controller.process_switch_obj(switch, 1, logical=True)
         self.delay.add(ms=10, callback=self._release_confirm_switch, switch=switch)
 
     def _release_confirm_switch(self, switch):
-        self.log.debug('Releasing eject confirmation switch: {}'.format(switch.name))
-        self.machine.switch_controller.process_switch(switch.name, 0, logical=True)
+        self.log.debug('Releasing eject confirmation switch: %s', switch.name)
+        self.machine.switch_controller.process_switch_obj(switch, 0, logical=True)
 
     def set_target(self, source, target, mechanical_eject, **kwargs):
         """Set target for action."""
@@ -181,16 +188,16 @@ class AddBallToTargetAction(BaseSmartVirtualCoilAction):
                        source.name, target.name, mechanical_eject)
         del kwargs
         driver = None
-        if source.config['eject_coil']:
-            driver = source.config['eject_coil'].hw_driver
-        elif source.config['hold_coil']:
-            driver = source.config['hold_coil'].hw_driver
+        if isinstance(source.ejector, (EnableCoilEjector, PulseCoilEjector)) and source.ejector.config['eject_coil']:
+            driver = source.ejector.config['eject_coil'].hw_driver
+        elif isinstance(source.ejector, HoldCoilEjector) and source.ejector.config['hold_coil']:
+            driver = source.ejector.config['hold_coil'].hw_driver
         if driver and driver.action:
             driver.action.target_device = target
 
         if "delay" in self.actions and self.machine.config['smart_virtual']['simulate_manual_plunger']:
-            self.log.debug("Adding {}ms delay before ejecting".format(
-                self.machine.config['smart_virtual']['simulate_manual_plunger_timeout']))
+            self.log.debug("Adding %sms delay before ejecting",
+                           self.machine.config['smart_virtual']['simulate_manual_plunger_timeout'])
 
             # simulate mechanical eject
             self.delay.add(ms=self.machine.config['smart_virtual']['simulate_manual_plunger_timeout'],
@@ -207,20 +214,19 @@ class AddBallToTargetAction(BaseSmartVirtualCoilAction):
             return
 
         for switch in self.ball_switches:
-            if self.machine.switch_controller.is_active(switch.name):
-                self.machine.switch_controller.process_switch(switch.name, 0,
-                                                              logical=True)
+            if self.machine.switch_controller.is_active(switch):
+                self.machine.switch_controller.process_switch_obj(switch, 0, logical=True)
                 self.log.debug("Deactivating: %s", switch.name)
                 break
 
         if self.result == "success":
             if (self.device.config['entrance_switch_full_timeout'] and
                     self.device.machine.switch_controller.is_active(
-                    self.device.config['entrance_switch'].name)):
+                    self.device.config['entrance_switch'][0])):
 
-                self.machine.switch_controller.process_switch(
-                    self.device.config['entrance_switch'].name, 0, logical=True)
-                self.log.debug("Deactivating: %s", self.device.config['entrance_switch'].name)
+                self.machine.switch_controller.process_switch_obj(
+                    self.device.config['entrance_switch'][0], 0, logical=True)
+                self.log.debug("Deactivating: %s", self.device.config['entrance_switch'][0].name)
 
             if self.confirm_eject_switch:
                 self.delay.add(ms=50, callback=self.confirm_eject_via_switch,
@@ -239,7 +245,6 @@ class AddBallToTargetAction(BaseSmartVirtualCoilAction):
             if self.target_device.is_playfield() and not self.confirm_eject_switch:
                 raise AssertionError("Ball cannot go missing to a playfield without confirm_switch.")
             # missing does not do anything
-            pass
         else:
             raise AssertionError("Invalid result {}".format(self.result))
 
@@ -251,7 +256,7 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
     def __init__(self, machine):
         """Initialise smart virtual platform."""
         super().__init__(machine)
-        self.delay = DelayManager(self.machine.delayRegistry)
+        self.delay = DelayManager(self.machine)
         self.actions = {}       # type: Dict[BallDevice, AddBallToTargetAction]
 
     def __repr__(self):
@@ -262,21 +267,15 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
         self.log = logging.getLogger("Smart Virtual Platform")
         self.log.debug("Configuring smart_virtual hardware interface.")
 
-    @asyncio.coroutine
-    def initialize(self):
-        """Initialise platform."""
-        self.machine.events.add_handler('init_phase_5',
-                                        self._initialize2)
-
-    def _initialize2(self, **kwargs):
-        del kwargs
+    async def start(self):
+        """Initialise platform when all devices are ready."""
         self._initialise_ball_devices()
         self._initialise_drop_targets()
         self._initialise_drop_target_banks()
         self._initialise_score_reels()
 
     def _initialise_score_reels(self):
-        for device in self.machine.score_reels:
+        for device in self.machine.score_reels.values():
             if device.config['coil_inc']:
                 device.config['coil_inc'].hw_driver.action = ScoreReelAdvanceAction(
                     ["pulse"], self.machine,
@@ -301,7 +300,7 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
                 )
 
     def _initialise_drop_targets(self):
-        for device in self.machine.drop_targets:
+        for device in self.machine.drop_targets.values():
             if device.config['reset_coil']:
                 device.config['reset_coil'].hw_driver.action = SwitchDisableAction(
                     ["pulse"], self.machine, [device.config['switch']])
@@ -310,7 +309,7 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
                     ["pulse"], self.machine, [device.config['switch']])
 
     def _initialise_drop_target_banks(self):
-        for device in self.machine.drop_target_banks:
+        for device in self.machine.drop_target_banks.values():
             if device.config['reset_coil']:
                 device.config['reset_coil'].hw_driver.action = ResetDropTargetAction(
                     ["pulse"], self.machine, device)
@@ -320,17 +319,18 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
                     ["pulse"], self.machine, device)
 
     def _initialise_ball_devices(self):
-        for device in self.machine.ball_devices:
+        for device in self.machine.ball_devices.values():
             if device.is_playfield():
                 continue
 
             action = None
-            if device.config['eject_coil']:
-                action = device.config['eject_coil'].hw_driver.action = AddBallToTargetAction(
+            if isinstance(device.ejector, (EnableCoilEjector, PulseCoilEjector)) and \
+                    device.ejector.config['eject_coil']:
+                action = device.ejector.config['eject_coil'].hw_driver.action = AddBallToTargetAction(
                     ["pulse", "enable"], self.machine, self, device)
 
-            elif device.config['hold_coil']:
-                action = device.config['hold_coil'].hw_driver.action = AddBallToTargetAction(
+            elif isinstance(device.ejector, HoldCoilEjector) and device.ejector.config['hold_coil']:
+                action = device.ejector.config['hold_coil'].hw_driver.action = AddBallToTargetAction(
                     ["disable"], self.machine, self, device)
             elif device.config['mechanical_eject']:
                 action = AddBallToTargetAction(["delay"], self.machine, self, device)
@@ -346,7 +346,7 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
         del platform_settings
         # generate number if None
         if number is None:
-            number = self._next_driver
+            number = str(self._next_driver)
             self._next_driver += 1
 
         driver = SmartVirtualDriver(config, number)
@@ -355,12 +355,11 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
 
     def add_ball_to_device(self, device):
         """Add ball to device."""
-        self.log.debug("Adding ball to {}".format(device.name))
+        self.log.debug("Adding ball to %s", device.name)
         if LogMixin.unit_test and device.balls >= device.config['ball_capacity']:
             raise AssertionError("KABOOM! We just added a ball to {} which has a capacity "
-                                 "of {} but already had {} ball(s)".format(device.name,
-                                                                           device.config['ball_capacity'],
-                                                                           device.balls))
+                                 "of {} but already had {} ball(s)".format(
+                                     device.name, device.config['ball_capacity'], device.balls))
 
         if device.config['entrance_switch']:
 
@@ -372,36 +371,38 @@ class SmartVirtualHardwarePlatform(VirtualPlatform):
                 if device.balls == device.config['ball_capacity'] - 1:
 
                     if LogMixin.unit_test and self.machine.switch_controller.is_active(
-                            device.config['entrance_switch'].name):
+                            device.config['entrance_switch'][0]):
                         raise AssertionError(
                             "KABOOM! We just added a ball to {} which already "
                             "had an active entrance switch".format(
                                 device.name))
 
-                    self.log.debug('Enabling switch {} due to ball being added to {}'.format(device.config['entrance_switch'].name, device.name))
+                    self.log.debug('Enabling switch %s due to ball being added to %s',
+                                   device.config['entrance_switch'][0].name, device.name)
 
-                    self.machine.switch_controller.process_switch(
-                        device.config['entrance_switch'].name, 1, True)
+                    self.machine.switch_controller.process_switch_obj(
+                        device.config['entrance_switch'][0], 1, True)
                     return
 
-            self.log.debug('Hitting switch {} due to ball being added to {}'.format(device.config['entrance_switch'].name, device.name))
-            self.machine.switch_controller.process_switch(
-                device.config['entrance_switch'].name, 1, True)
-            self.machine.switch_controller.process_switch(
-                device.config['entrance_switch'].name, 0, True)
+            self.log.debug('Hitting switch %s due to ball being added to %s',
+                           device.config['entrance_switch'][0].name, device.name)
+            self.machine.switch_controller.process_switch_obj(
+                device.config['entrance_switch'][0], 1, True)
+            self.machine.switch_controller.process_switch_obj(
+                device.config['entrance_switch'][0], 0, True)
 
         if device.config['ball_switches']:
             found_switch = False
             for switch in device.config['ball_switches']:
-                if self.machine.switch_controller.is_inactive(switch.name):
-                    self.log.debug('Enabling switch {} due to ball being added to {}'.format(switch.name, device.name))
-                    self.machine.switch_controller.process_switch(
-                        switch.name, 1, logical=True)
+                if self.machine.switch_controller.is_inactive(switch):
+                    self.log.debug('Enabling switch %s due to ball being added to %s', switch.name, device.name)
+                    self.machine.switch_controller.process_switch_obj(
+                        switch, 1, logical=True)
                     found_switch = True
                     break
 
             if LogMixin.unit_test and not found_switch:
-                raise AssertionError("KABOOM! We just added a ball to {} which"
+                raise AssertionError("KABOOM! We just added a ball to {} which "
                                      "was already full.".format(device.name))
 
 
@@ -420,19 +421,18 @@ class SmartVirtualDriver(VirtualDriver):
 
     def disable(self):
         """Disable driver."""
+        super().disable()
         if self.action:
-            self.log.debug("Disabling driver")
             self.action.disable(self)
 
     def enable(self, pulse_settings: PulseSettings, hold_settings: HoldSettings):
         """Enable driver."""
-        del pulse_settings, hold_settings
+        super().enable(pulse_settings, hold_settings)
         if self.action:
-            self.log.debug("Enabling driver")
             self.action.enable(self)
 
     def pulse(self, pulse_settings: PulseSettings):
         """Pulse driver."""
+        super().pulse(pulse_settings)
         if self.action:
-            self.log.debug("Pulsing driver for {}ms".format(pulse_settings.duration))
             self.action.pulse(self, pulse_settings.duration)

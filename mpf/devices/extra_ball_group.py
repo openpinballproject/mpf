@@ -15,6 +15,8 @@ class ExtraBallGroup(SystemWideDevice):
     collection = 'extra_ball_groups'
     class_label = 'extra_ball_group'
 
+    __slots__ = ["player"]
+
     def __init__(self, machine: MachineController, name: str) -> None:
         """Initialize ExtraBallGroup."""
         super().__init__(machine, name)
@@ -83,10 +85,10 @@ class ExtraBallGroup(SystemWideDevice):
 
         self.player = None
 
-    def is_ok_to_light(self):
+    def is_ok_to_light(self) -> bool:
         """Check if it's possible to light an extra ball.
 
-        Returns: True of False
+        Returns True or False.
 
         This method checks to see if the group is enabled and whether the
         max_lit setting has been exceeded.
@@ -99,14 +101,17 @@ class ExtraBallGroup(SystemWideDevice):
             self.player['extra_ball_group_{}_num_lit'.format(self.name)])
 
     @event_handler(2)
-    def award_lit(self, **kwargs):
+    def event_award_lit(self, **kwargs):
+        """Handle award_lit control event."""
+        del kwargs
+        self.award_lit()
+
+    def award_lit(self):
         """Award a lit extra ball.
 
         If the player does not have any lit extra balls, this method does
         nothing.
         """
-        del kwargs
-
         if not self.player:
             return
 
@@ -125,10 +130,15 @@ class ExtraBallGroup(SystemWideDevice):
         else:
             posted_unlit_events = True
 
-        self.award(posted_unlit_event=posted_unlit_events)
+        self.award(posted_unlit_events=posted_unlit_events)
 
     @event_handler(1)
-    def award(self, posted_unlit_events=False, **kwargs):
+    def event_award(self, posted_unlit_events=False, **kwargs):
+        """Handle award control event."""
+        del kwargs
+        self.award(posted_unlit_events)
+
+    def award(self, posted_unlit_events=False):
         """Immediately awards an extra ball.
 
         This event first checks to make sure the limits of the max extra
@@ -138,8 +148,6 @@ class ExtraBallGroup(SystemWideDevice):
         extra balls or extra balls lit. You can use this to directly award an
         extra ball.
         """
-        del kwargs
-
         if not self.enabled:
             self.award_disabled()
             return
@@ -162,15 +170,18 @@ class ExtraBallGroup(SystemWideDevice):
                 self._post_unlit_events()
 
     @event_handler(3)
-    def light(self, **kwargs):
+    def event_light(self, **kwargs):
+        """Handle light control event."""
+        del kwargs
+        self.light()
+
+    def light(self):
         """Light the extra ball for possible collection by the player.
 
         This method checks that the group is enabled and that the max lit
         value has not been exceeded. If so, this method will post the extra
         ball disabled events.
         """
-        del kwargs
-
         if self.is_ok_to_light():
             self.player['extra_ball_group_{}_num_lit'.format(self.name)] += 1
 
@@ -183,7 +194,7 @@ class ExtraBallGroup(SystemWideDevice):
             extra ball from their previous turn. Therefore this event is a
             good event to use for your award slides and shows when a player
             lights the extra ball, because you don't want to use
-            :doc:`extra_ball_group_name_lit` because that is also posted when
+            :doc:`extra_ball_group_extra_ball_group_lit` because that is also posted when
             the player's turn starts and you don't want the award show to play
             again when they're starting their turn.
             '''
@@ -207,7 +218,7 @@ class ExtraBallGroup(SystemWideDevice):
         Note that this event is posted if an extra ball is lit during play
         and also when a player's turn starts if they have a lit extra ball.
 
-        See also the :doc:`extra_ball_lit_awarded` for a similar event that
+        See also the :doc:`extra_ball_extra_ball_lit` for a similar event that
         is only posted when an extra ball is lit during play, and not
         if the player starts their turn with the extra ball lit.
         '''

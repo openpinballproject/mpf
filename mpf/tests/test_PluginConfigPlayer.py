@@ -130,21 +130,17 @@ class TestConfigPlayer3(PluginPlayer):
 
 
 class TestPluginConfigPlayer(MpfBcpTestCase):
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'plugin_config_player.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/plugin_config_player/'
 
     def setUp(self):
-
-        self.add_to_config_validator('test_player',
-                                     dict(__valid_in__='machine, mode'))
-        self.add_to_config_validator('test2_player',
-                                     dict(__valid_in__='machine, mode'))
+        self.machine_spec_patches['test_player'] = dict(__valid_in__='machine, mode')
+        self.machine_spec_patches['test2_player'] = dict(__valid_in__='machine, mode')
 
         super().setUp()
-
         self._bcp_client.send = MagicMock()
 
     def test_plugin_config_player(self):
@@ -160,20 +156,36 @@ class TestPluginConfigPlayer(MpfBcpTestCase):
         self._bcp_client.send.reset_mock()
         self.machine.events.post('event1')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event1'})
+        self._bcp_client.send.assert_called_with('trigger', {'priority': 0, 'settings': {'tests': {}},
+                                                             'name': 'tests_play', 'calling_context': 'event1',
+                                                             'context': '_global'})
+
+        self.assertEqual(1, len(self.machine.bcp.transport._handlers["tests_play"]))
+        self._bcp_client.send.reset_mock()
+        self.machine.events.post('event1')
+        self.advance_time_and_run()
+        self._bcp_client.send.assert_called_with('trigger', {'priority': 0, 'settings': {'tests': {}},
+                                                             'name': 'tests_play', 'calling_context': 'event1',
+                                                             'context': '_global'})
+
+        self.assertEqual(1, len(self.machine.bcp.transport._handlers["tests_play"]))
         self._bcp_client.send.reset_mock()
 
         # event2 is in the test_player and test2_player. Check that it's only
         # sent once
         self.machine.events.post('event2')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event2'})
+        self._bcp_client.send.assert_called_with('trigger', {'calling_context': 'event2', 'context': '_global',
+                                                             'priority': 0, 'name': 'test2s_play',
+                                                             'settings': {'test2s': {}}})
         self._bcp_client.send.reset_mock()
 
         # event3 is test2_player only. Check that it's only sent once
         self.machine.events.post('event3')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event3'})
+        self._bcp_client.send.assert_called_with('trigger', {'priority': 0, 'name': 'test2s_play',
+                                                             'context': '_global', 'settings': {'test2s': {}},
+                                                             'calling_context': 'event3'})
         self._bcp_client.send.reset_mock()
 
         # fake_event isn't used in any player. Check that it's not sent
@@ -193,7 +205,8 @@ class TestPluginConfigPlayer(MpfBcpTestCase):
         self.machine.events.post('event4')
         self.advance_time_and_run()
 
-        self._bcp_client.send.assert_called_with('trigger', {'name': 'event4'})
+        self._bcp_client.send.assert_called_with('trigger', {'settings': {'tests': {}}, 'calling_context': 'event4',
+                                                             'priority': 400, 'context': 'mode1', 'name': 'tests_play'})
         self._bcp_client.send.reset_mock()
 
         # Stop mode 1
@@ -218,19 +231,24 @@ class TestPluginConfigPlayer(MpfBcpTestCase):
         # event1
         self.machine.events.post('event1')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event1'})
+        self._bcp_client.send.assert_called_with('trigger', {'settings': {'tests': {}}, 'calling_context': 'event1',
+                                                             'name': 'tests_play', 'context': '_global', 'priority': 0})
         self._bcp_client.send.reset_mock()
 
         # event2
         self.machine.events.post('event2')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event2'})
+        self._bcp_client.send.assert_called_with('trigger', {'settings': {'test2s': {}}, 'context': '_global',
+                                                             'calling_context': 'event2', 'name': 'test2s_play',
+                                                             'priority': 0})
         self._bcp_client.send.reset_mock()
 
         # event3
         self.machine.events.post('event3')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event3'})
+        self._bcp_client.send.assert_called_with('trigger', {'context': '_global', 'name': 'test2s_play',
+                                                             'calling_context': 'event3', 'settings': {'test2s': {}},
+                                                             'priority': 0})
         self._bcp_client.send.reset_mock()
 
     def test_plugin_from_show(self):
@@ -241,6 +259,8 @@ class TestPluginConfigPlayer(MpfBcpTestCase):
         self.advance_time_and_run()
 
         self.assertTrue(t1_player.play.called)
+        self.assertEqual(1, len(self.machine.bcp.transport._handlers["tests_play"]))
+        self.assertEqual(1, len(self.machine.bcp.transport._handlers["tests_clear"]))
 
         self.assertIn('tests_play', self.machine.bcp.transport._handlers)
         self.assertIn('tests_clear', self.machine.bcp.transport._handlers)
@@ -250,7 +270,15 @@ class TestPluginConfigPlayer(MpfBcpTestCase):
     def test_conditional_events(self):
         self.machine.events.post('event5')
         self.advance_time_and_run()
-        self._bcp_client.send.assert_called_once_with('trigger', {'name': 'event5'})
+        self._bcp_client.send.assert_not_called()
+        self._bcp_client.send.reset_mock()
+
+        self.machine.events.post('event5', foo=0)
+        self.advance_time_and_run()
+        self._bcp_client.send.assert_called_once_with('trigger', {'settings': {'tests': {}}, 'name': 'tests_play',
+                                                                  'priority': 0, 'context': '_global',
+                                                                  'calling_context': 'event5{foo==0}',
+                                                                  'foo': 0})
         self._bcp_client.send.reset_mock()
 
     def test_plugin_in_show_but_not_standalone(self):

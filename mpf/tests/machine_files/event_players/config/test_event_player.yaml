@@ -15,9 +15,11 @@ event_player:
         - event2
         - event3
     play_multiple_string:
-        event1
-        event2
-        event3
+        event1, event2, event3
+    play_multiple_args2:
+        event1:
+          a: b
+          c: d
     play_multiple_args:
         event1: {"a": "b"}
         event2: {}
@@ -29,6 +31,43 @@ event_player:
     test_time_delay2: td2|1.5s
     test_conditional_mode{mode.mode1.active}: mode1_active
     test_conditional_mode{not mode.mode1.active}: mode1_not_active
+    test_conditional_handlers:
+        - event_always
+        - event_if_modeactive{mode.mode1.active}
+        - event_if_modestopping{mode.mode1.stopping}
+    play_placeholder_event:
+      - my_event_(machine.test)_123
+    play_placeholder_args:
+      loaded_event_int:
+        foo:
+          value: machine.testint
+          type: int
+      loaded_event_float:
+        foo:
+          value: machine.testfloat
+          type: float
+      loaded_event_bool:
+        foo:
+          value: machine.testbool
+          type: bool
+      loaded_event_string:
+        foo:
+          value: machine.teststring
+          type: string
+      loaded_event_notype:
+        foo:
+          value: machine.testnotype
+    play_event_with_kwargs:
+      - event_always
+      - event_(name)
+    play_event_with_param_kwargs:
+      event_with_param_kwargs:
+        foo:
+          value: (result)
+          type: string
+        maths:
+          value: 5 * (initial)
+          type: int
 
 shows:
   test_event_show:

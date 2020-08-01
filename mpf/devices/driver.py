@@ -6,6 +6,7 @@ from mpf.core.events import event_handler
 from mpf.core.machine import MachineController
 from mpf.core.platform import DriverPlatform, DriverConfig
 from mpf.core.system_wide_device import SystemWideDevice
+from mpf.exceptions.driver_limits_error import DriverLimitsError
 from mpf.platforms.interfaces.driver_platform_interface import DriverPlatformInterface, PulseSettings, HoldSettings
 
 
@@ -28,14 +29,13 @@ class Driver(SystemWideDevice):
     collection = 'coils'
     class_label = 'coil'
 
+    __slots__ = ["hw_driver", "delay", "platform", "__dict__"]
+
     def __init__(self, machine: MachineController, name: str) -> None:
         """Initialise driver."""
         self.hw_driver = None   # type: DriverPlatformInterface
         super().__init__(machine, name)
-        self.delay = DelayManager(self.machine.delayRegistry)
-
-        self.time_last_changed = -1
-        self.time_when_done = -1
+        self.delay = DelayManager(self.machine)
         self.platform = None                # type: DriverPlatform
 
     @classmethod
@@ -47,49 +47,53 @@ class Driver(SystemWideDevice):
     def _check_duplicate_coil_numbers(machine, **kwargs):
         del kwargs
         check_set = set()
-        for coil in machine.coils:
+        for coil in machine.coils.values():
             if not hasattr(coil, "hw_driver"):
                 # skip dual wound and other special devices
                 continue
-            key = (coil.platform, coil.hw_driver.number)
+            key = (coil.config['platform'], coil.hw_driver.number)
             if key in check_set:
                 raise AssertionError("Duplicate coil number {} for coil {}".format(coil.hw_driver.number, coil))
 
             check_set.add(key)
 
-    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str=None) -> dict:
+    def validate_and_parse_config(self, config: dict, is_mode_config: bool, debug_prefix: str = None) -> dict:
         """Return the parsed and validated config.
 
         Args:
             config: Config of device
             is_mode_config: Whether this device is loaded in a mode or system-wide
+            debug_prefix: Prefix to use when logging.
 
         Returns: Validated config
         """
         config = super().validate_and_parse_config(config, is_mode_config, debug_prefix)
         platform = self.machine.get_platform_sections('coils', getattr(config, "platform", None))
+        platform.assert_has_feature("drivers")
         config['platform_settings'] = platform.validate_coil_section(self, config.get('platform_settings', None))
-        self._configure_device_logging(config)
         return config
 
-    def _initialize(self):
+    async def _initialize(self):
+        await super()._initialize()
         self.platform = self.machine.get_platform_sections('coils', self.config['platform'])
 
         config = DriverConfig(
             default_pulse_ms=self.get_and_verify_pulse_ms(None),
-            default_pulse_power=self.config['default_pulse_power'],
-            default_hold_power=self.config['default_hold_power'],
+            default_pulse_power=self.get_and_verify_pulse_power(None),
+            default_hold_power=self.get_and_verify_hold_power(None),
             default_recycle=self.config['default_recycle'],
             max_pulse_ms=self.config['max_pulse_ms'],
             max_pulse_power=self.config['max_pulse_power'],
             max_hold_power=self.config['max_hold_power'])
         platform_settings = dict(self.config['platform_settings']) if self.config['platform_settings'] else dict()
 
+        if not self.platform.features['allow_empty_numbers'] and self.config['number'] is None:
+            self.raise_config_error("Driver must have a number.", 1)
+
         try:
             self.hw_driver = self.platform.configure_driver(config, self.config['number'], platform_settings)
         except AssertionError as e:
             raise AssertionError("Failed to configure driver {} in platform. See error above".format(self.name)) from e
-
 
     def get_and_verify_pulse_power(self, pulse_power: Optional[float]) -> float:
         """Return the pulse power to use.
@@ -109,8 +113,8 @@ class Driver(SystemWideDevice):
             max_pulse_power = self.config['default_pulse_power']
 
         if pulse_power > max_pulse_power:
-            raise AssertionError("Driver may {} not be pulsed with pulse_power {} because max_pulse_power is {}".
-                                 format(self.name, pulse_power, max_pulse_power))
+            raise DriverLimitsError("Driver may {} not be pulsed with pulse_power {} because max_pulse_power is {}".
+                                    format(self.name, pulse_power, max_pulse_power))
         return pulse_power
 
     def get_and_verify_hold_power(self, hold_power: Optional[float]) -> float:
@@ -118,8 +122,17 @@ class Driver(SystemWideDevice):
 
         If hold_power is None it will use the default_hold_power. Additionally it will verify the limits.
         """
+        if hold_power is None and self.config['default_hold_power']:
+            hold_power = self.config['default_hold_power']
+
+        if hold_power is None and self.config['max_hold_power']:
+            hold_power = self.config['max_hold_power']
+
+        if hold_power is None and self.config['allow_enable']:
+            hold_power = 1.0
+
         if hold_power is None:
-            hold_power = self.config['default_hold_power'] if self.config['default_hold_power'] is not None else 1.0
+            hold_power = 0.0
 
         if hold_power and 0 > hold_power > 1:
             raise AssertionError("Hold_power has to be between 0 and 1 but is {}".format(hold_power))
@@ -133,8 +146,8 @@ class Driver(SystemWideDevice):
             max_hold_power = self.config['default_hold_power']
 
         if hold_power > max_hold_power:
-            raise AssertionError("Driver {} may not be enabled with hold_power {} because max_hold_power is {}".
-                                 format(self.name, hold_power, max_hold_power))
+            raise DriverLimitsError("Driver {} may not be enabled with hold_power {} because max_hold_power is {}".
+                                    format(self.name, hold_power, max_hold_power))
         return hold_power
 
     def get_and_verify_pulse_ms(self, pulse_ms: Optional[int]) -> int:
@@ -154,10 +167,19 @@ class Driver(SystemWideDevice):
         if 0 > pulse_ms > self.platform.features['max_pulse']:
             raise AssertionError("Pulse_ms {} is not valid.".format(pulse_ms))
 
+        if self.config['max_pulse_ms'] and pulse_ms > self.config['max_pulse_ms']:
+            raise DriverLimitsError("Driver {} may not be pulsed with pulse_ms {} because max_pulse_ms is {}".
+                                    format(self.name, pulse_ms, self.config['max_pulse_ms']))
+
         return pulse_ms
 
     @event_handler(2)
-    def enable(self, pulse_ms: int=None, pulse_power: float=None, hold_power: float=None, **kwargs):
+    def event_enable(self, pulse_ms: int = None, pulse_power: float = None, hold_power: float = None, **kwargs):
+        """Event handler for control enable."""
+        del kwargs
+        self.enable(pulse_ms, pulse_power, hold_power)
+
+    def enable(self, pulse_ms: int = None, pulse_power: float = None, hold_power: float = None):
         """Enable a driver by holding it 'on'.
 
         Args:
@@ -177,16 +199,16 @@ class Driver(SystemWideDevice):
 
         allow_enable: True
         """
-        del kwargs
-
         pulse_ms = self.get_and_verify_pulse_ms(pulse_ms)
 
         pulse_power = self.get_and_verify_pulse_power(pulse_power)
         hold_power = self.get_and_verify_hold_power(hold_power)
 
-        self.time_when_done = -1
-        self.time_last_changed = self.machine.clock.get_time()
-        self.debug_log("Enabling Driver")
+        if hold_power == 0.0:
+            raise DriverLimitsError("Cannot enable driver with hold_power 0.0")
+
+        self.info_log("Enabling Driver with power %s (pulse_ms %sms and pulse_power %s)", hold_power, pulse_ms,
+                      pulse_power)
         self.hw_driver.enable(PulseSettings(power=pulse_power, duration=pulse_ms),
                               HoldSettings(power=hold_power))
         # inform bcp clients
@@ -194,12 +216,14 @@ class Driver(SystemWideDevice):
                                                      pulse_ms=pulse_ms, pulse_power=pulse_power, hold_power=hold_power)
 
     @event_handler(1)
-    def disable(self, **kwargs):
-        """Disable this driver."""
+    def event_disable(self, **kwargs):
+        """Event handler for disable control event."""
         del kwargs
-        self.debug_log("Disabling Driver")
-        self.time_last_changed = self.machine.clock.get_time()
-        self.time_when_done = self.time_last_changed
+        self.disable()
+
+    def disable(self):
+        """Disable this driver."""
+        self.info_log("Disabling Driver")
         self.machine.delay.remove(name='{}_timed_enable'.format(self.name))
         self.hw_driver.disable()
         # inform bcp clients
@@ -210,17 +234,17 @@ class Driver(SystemWideDevice):
         if max_wait_ms is None:
             self.config['psu'].notify_about_instant_pulse(pulse_ms=pulse_ms)
             return 0
-        else:
-            return self.config['psu'].get_wait_time_for_pulse(pulse_ms=pulse_ms, max_wait_ms=max_wait_ms)
+
+        return self.config['psu'].get_wait_time_for_pulse(pulse_ms=pulse_ms, max_wait_ms=max_wait_ms)
 
     def _pulse_now(self, pulse_ms: int, pulse_power: float) -> None:
         """Pulse this driver now."""
         if 0 < pulse_ms <= self.platform.features['max_pulse']:
-            self.debug_log("Pulsing Driver. %sms (%s pulse_power)", pulse_ms, pulse_power)
+            self.info_log("Pulsing Driver for %sms (%s pulse_power)", pulse_ms, pulse_power)
             self.hw_driver.pulse(PulseSettings(power=pulse_power, duration=pulse_ms))
         else:
-            self.debug_log("Enabling Driver for %sms (%s pulse_power)", pulse_ms, pulse_power)
-            self.delay.reset(name='timed_disable'.format(self.name),
+            self.info_log("Enabling Driver for %sms (%s pulse_power)", pulse_ms, pulse_power)
+            self.delay.reset(name='timed_disable',
                              ms=pulse_ms,
                              callback=self.disable)
             self.hw_driver.enable(PulseSettings(power=pulse_power, duration=0),
@@ -230,7 +254,12 @@ class Driver(SystemWideDevice):
                                                      pulse_ms=pulse_ms, pulse_power=pulse_power)
 
     @event_handler(3)
-    def pulse(self, pulse_ms: int=None, pulse_power: float=None, max_wait_ms: int=None, **kwargs) -> int:
+    def event_pulse(self, pulse_ms: int = None, pulse_power: float = None, max_wait_ms: int = None, **kwargs) -> None:
+        """Event handler for pulse control events."""
+        del kwargs
+        self.pulse(pulse_ms, pulse_power, max_wait_ms)
+
+    def pulse(self, pulse_ms: int = None, pulse_power: float = None, max_wait_ms: int = None) -> int:
         """Pulse this driver.
 
         Args:
@@ -238,20 +267,16 @@ class Driver(SystemWideDevice):
                 enabled for. If no value is provided, the driver will be
                 enabled for the value specified in the config dictionary.
             pulse_power: The pulse power. A float between 0.0 and 1.0.
+            max_wait_ms: Maximum time this pulse may be delayed for PSU optimization.
         """
-        del kwargs
-
         pulse_ms = self.get_and_verify_pulse_ms(pulse_ms)
         pulse_power = self.get_and_verify_pulse_power(pulse_power)
         wait_ms = self._get_wait_ms(pulse_ms, max_wait_ms)
 
         if wait_ms > 0:
+            self.debug_log("Delaying pulse by %sms pulse_ms: %sms (%s pulse_power)", wait_ms, pulse_ms, pulse_power)
             self.delay.add(wait_ms, self._pulse_now, pulse_ms=pulse_ms, pulse_power=pulse_power)
         else:
             self._pulse_now(pulse_ms, pulse_power)
-
-        # only needed for score reels
-        # self.time_last_changed = self.machine.clock.get_time()
-        self.time_when_done = self.time_last_changed + int((pulse_ms + wait_ms) / 1000.0)
 
         return wait_ms

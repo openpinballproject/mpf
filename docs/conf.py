@@ -12,6 +12,7 @@ import time
 
 import git
 import sphinx_rtd_theme
+from mpf.core.config_validator import ConfigValidator
 
 sys.path.insert(0, os.path.abspath(os.pardir))
 
@@ -349,7 +350,9 @@ class RstBuilder(object):
         self.dest_folder = 'api'
         self.template_folder = '_templates'
 
-        self.mpfconfig = ConfigProcessor.load_config_file(os.path.join(
+        config_validator = ConfigValidator(None)
+        config_processor = ConfigProcessor(config_validator)
+        self.mpfconfig = config_processor.load_config_file(os.path.join(
             os.pardir, 'mpf', 'mpfconfig.yaml'), 'machine')
 
         self.doc_sections = dict()
@@ -378,7 +381,7 @@ class RstBuilder(object):
 
         self.doc_sections['platforms'] = self.mpfconfig['mpf']['platforms']
 
-        for plugin in Util.string_to_list(self.mpfconfig['mpf']['plugins']):
+        for plugin in Util.string_to_event_list(self.mpfconfig['mpf']['plugins']):
             name = plugin.split('.')[-2]
             self.doc_sections['machine'][name] = plugin
 

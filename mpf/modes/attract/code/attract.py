@@ -12,9 +12,11 @@ class Attract(Mode):
     next mode if the request to start game comes back as approved.
     """
 
-    def __init__(self, machine, config, name, path):
+    __slots__ = ["start_button_pressed_time", "start_hold_time", "start_buttons_held"]
+
+    def __init__(self, *args, **kwargs):
         """Initialise mode."""
-        super().__init__(machine, config, name, path)
+        super().__init__(*args, **kwargs)
 
         self.start_button_pressed_time = 0.0
         self.start_hold_time = 0.0
@@ -30,23 +32,28 @@ class Attract(Mode):
         for switch in self.machine.switches.items_tagged(
                 self.machine.config['game']['start_game_switch_tag']):
             self.switch_handlers.append(
-                self.machine.switch_controller.add_switch_handler(
-                    switch.name, self.start_button_pressed, 1))
+                self.machine.switch_controller.add_switch_handler_obj(
+                    switch, self.start_button_pressed, 1))
             self.switch_handlers.append(
-                self.machine.switch_controller.add_switch_handler(
-                    switch.name, self.start_button_released, 0))
+                self.machine.switch_controller.add_switch_handler_obj(
+                    switch, self.start_button_released, 0))
+
+        if self.machine.config['game']['start_game_event']:
+            self.add_mode_event_handler(self.machine.config['game']['start_game_event'], self.start_button_released)
 
         if hasattr(self.machine, 'ball_devices'):
             self.machine.ball_controller.collect_balls()
 
         # trigger ball search if we are missing balls
         if self.machine.ball_controller.num_balls_known < self.machine.config['machine']['balls_installed']:
-            for playfield in self.machine.playfields:
+            for playfield in self.machine.playfields.values():
                 playfield.ball_search.enable()
                 playfield.ball_search.start()
 
     def start_button_pressed(self):
-        """Called when the a switch tagged with *start* is activated.
+        """Handle start button press.
+
+        Called when the a switch tagged with *start* is activated.
 
         Note that in MPF, the game start process is initiated when the start
         button is *released*, so when the button is first pressed, MPF just
@@ -57,21 +64,23 @@ class Attract(Mode):
         """
         self.start_button_pressed_time = self.machine.clock.get_time()
 
-    def start_button_released(self):
-        """Called when the a switch tagged with *start* is deactivated.
+    def start_button_released(self, **kwargs):
+        """Handle start button release.
+
+        Called when the a switch tagged with *start* is deactivated.
 
         Since this is the Attract mode, this method posts a boolean event
         called *request_to_start_game*. If that event comes back True, this
         method calls :meth:`result_of_start_request`.
         """
+        del kwargs
         self.start_hold_time = self.machine.clock.get_time() - self.start_button_pressed_time
         self.start_buttons_held = list()
 
         for switch in self.machine.switches.items_tagged('player'):
-            if self.machine.switch_controller.is_active(switch.name):
+            if self.machine.switch_controller.is_active(switch):
                 self.start_buttons_held.append(switch.name)
 
-        # todo test for active?
         self.machine.events.post_boolean('request_to_start_game',
                                          callback=self.result_of_start_request)
         '''event: request_to_start_game
@@ -85,7 +94,9 @@ class Attract(Mode):
         '''
 
     def result_of_start_request(self, ev_result=True):
-        """Called after the *request_to_start_game* event is posted.
+        """Handle the result of the start request.
+
+        Called after the *request_to_start_game* event is posted.
 
         If `result` is True, this method posts the event
         *game_start*. If False, nothing happens, as the game start
@@ -104,8 +115,11 @@ class Attract(Mode):
                                      buttons=self.start_buttons_held,
                                      hold_time=self.start_hold_time)
             '''event: game_start
-            desc: A game is starting. (Do not use this event to start a game.
-            Instead, use the *request_to_start_game* event.
+            desc: Starts game while bypassing the many systems which have to
+            "approve" the start. (Are the balls in the right places, are there
+            enough credits, etc.) Use of this method is not recommended but may
+            be useful in testing code. Instead, use the *request_to_start_game*
+            event.
 
             args:
             buttons: A list of switches tagged with *player* that were held in

@@ -5,10 +5,16 @@ from mpf.tests.MpfTestCase import MpfTestCase
 
 
 class TestAccelerometer(MpfTestCase):
-    def getConfigFile(self):
+
+    def __init__(self, methodName):
+        super().__init__(methodName)
+        # this is the first test. give it some more time
+        self.expected_duration = 2
+
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/accelerometer/'
 
     def _event_level1(self, **kwargs):
@@ -69,7 +75,8 @@ class TestAccelerometer(MpfTestCase):
         self.assertFalse(self._level2)
 
         # 90 degree on the side
-        accelerometer.update_acceleration(1.0, 0.0, 0.0)
+        for _ in range(100):
+            accelerometer.update_acceleration(1.0, 0.0, 0.0)
         self.assertAlmostEqual(math.pi / 2, accelerometer.get_level_xz())
         self.assertAlmostEqual(0, accelerometer.get_level_yz())
         self.assertAlmostEqual(math.pi / 2, accelerometer.get_level_xyz())
@@ -94,7 +101,8 @@ class TestAccelerometer(MpfTestCase):
         # 3.01 degree
         self._level1 = False
         self._level2 = False
-        accelerometer.update_acceleration(0.0, 0.05, 0.95)
+        for _ in range(100):
+            accelerometer.update_acceleration(0.0, 0.05, 0.95)
         self.machine_run()
         self.assertTrue(self._level1)
         self.assertFalse(self._level2)
@@ -102,7 +110,8 @@ class TestAccelerometer(MpfTestCase):
         # 6.34 degree
         self._level1 = False
         self._level2 = False
-        accelerometer.update_acceleration(0.0, 0.1, 0.9)
+        for _ in range(100):
+            accelerometer.update_acceleration(0.0, 0.1, 0.9)
         self.machine_run()
         self.assertTrue(self._level1)
         self.assertTrue(self._level2)
@@ -116,7 +125,7 @@ class TestAccelerometer(MpfTestCase):
         self._hit2 = True
 
     def test_hits(self):
-        accelerometer = self.machine.accelerometers.test_accelerometer
+        accelerometer = self.machine.accelerometers["test_accelerometer"]
 
         # perfectly leveled
         accelerometer.update_acceleration(0.0, 0.0, 1.0)
@@ -142,6 +151,10 @@ class TestAccelerometer(MpfTestCase):
         self._hit2 = False
 
         # and it calms
+        accelerometer.update_acceleration(0.01, 0.05, 0.99)
+        accelerometer.update_acceleration(0.01, 0.05, 0.99)
+        accelerometer.update_acceleration(0.01, 0.05, 0.99)
+        accelerometer.update_acceleration(0.01, 0.05, 0.99)
         accelerometer.update_acceleration(0.01, 0.05, 0.99)
         self.machine_run()
         self.assertFalse(self._hit1)

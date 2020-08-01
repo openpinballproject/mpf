@@ -6,10 +6,10 @@ from mpf.tests.MpfFakeGameTestCase import MpfFakeGameTestCase
 
 class TestServiceMode(MpfFakeGameTestCase):
 
-    def getConfigFile(self):
+    def get_config_file(self):
         return 'config.yaml'
 
-    def getMachinePath(self):
+    def get_machine_path(self):
         return 'tests/machine_files/service_mode/'
 
     def test_start_stop_service_in_attract(self):
@@ -87,7 +87,7 @@ class TestServiceMode(MpfFakeGameTestCase):
         self.start_game()
         self.assertModeRunning("game")
         self.assertModeRunning("service")
-        self.assertFalse(self.machine.switch_controller.is_active("s_door_open"))
+        self.assertSwitchState("s_door_open", 0)
 
         # open door. game still running
         self.hit_switch_and_run("s_door_open", 0)
@@ -186,7 +186,7 @@ class TestServiceMode(MpfFakeGameTestCase):
 
         for color in ["white", "red", "green", "blue", "yellow", "white"]:
             self.assertEventCalledWith("service_light_test_start",
-                                       board_name='',
+                                       board_name='Virtual',
                                        light_label='%',
                                        light_name='l_light1',
                                        light_num='1',
@@ -201,7 +201,7 @@ class TestServiceMode(MpfFakeGameTestCase):
         self.advance_time_and_run()
 
         self.assertEventCalledWith("service_light_test_start",
-                                   board_name='',
+                                   board_name='Virtual',
                                    light_label='%',
                                    light_name='l_light5',
                                    light_num='5',
@@ -214,7 +214,7 @@ class TestServiceMode(MpfFakeGameTestCase):
         self.advance_time_and_run()
 
         self.assertEventCalledWith("service_light_test_start",
-                                   board_name='',
+                                   board_name='Virtual',
                                    light_label='%',
                                    light_name='l_light1',
                                    light_num='1',
@@ -252,33 +252,33 @@ class TestServiceMode(MpfFakeGameTestCase):
         self.assertEventCalledWith("service_coil_test_start", board_name='Virtual', coil_label='Second coil',
                                    coil_name='c_test2', coil_num='2')
 
-        self.machine.coils.c_test2.pulse = MagicMock()
+        self.machine.coils["c_test2"].pulse = MagicMock()
         # pulse it
         self.hit_and_release_switch("s_service_enter")
         self.advance_time_and_run()
-        self.machine.coils.c_test2.pulse.assert_called_with()
-       
+        self.machine.coils["c_test2"].pulse.assert_called_with()
+
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
         self.assertEventCalledWith("service_coil_test_start", board_name='Virtual', coil_label='Third coil',
                                    coil_name='c_test5', coil_num='3')
-        
+
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
         self.assertEventCalledWith("service_coil_test_start", board_name='Virtual', coil_label='Fourth coil',
                                    coil_name='c_test6', coil_num='10')
-        
+
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
         self.assertEventCalledWith("service_coil_test_start", board_name='Virtual', coil_label='Fifth coil',
                                    coil_name='c_test4', coil_num='100')
-        
+
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
         self.assertEventCalledWith("service_coil_test_start", board_name='Virtual', coil_label='Sixth coil',
                                    coil_name='c_test3', coil_num='1000')
-        
-        
+
+
 
         # wrap to first
         self.hit_and_release_switch("s_service_up")
@@ -320,6 +320,7 @@ class TestServiceMode(MpfFakeGameTestCase):
         self.machine.settings.add_setting(SettingEntry("test2", "Test2", 2, "test2", False,
                                                        {True: "Yes", False: "No (default)"}))
         self.mock_event("service_settings_start")
+        self.mock_event("service_settings_edit")
         self.mock_event("service_settings_stop")
         # enter menu
         self.hit_and_release_switch("s_service_enter")
@@ -341,19 +342,19 @@ class TestServiceMode(MpfFakeGameTestCase):
         # change setting
         self.hit_and_release_switch("s_service_enter")
         self.advance_time_and_run()
-        self.assertEventCalledWith("service_settings_start", settings_label='Test2', value_label="No (default)")
+        self.assertEventCalledWith("service_settings_edit", settings_label='Test2', value_label="No (default)")
 
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
-        self.assertEventCalledWith("service_settings_start", settings_label='Test2', value_label="Yes")
+        self.assertEventCalledWith("service_settings_edit", settings_label='Test2', value_label="Yes")
 
         self.hit_and_release_switch("s_service_up")
         self.advance_time_and_run()
-        self.assertEventCalledWith("service_settings_start", settings_label='Test2', value_label="No (default)")
+        self.assertEventCalledWith("service_settings_edit", settings_label='Test2', value_label="No (default)")
 
         self.hit_and_release_switch("s_service_down")
         self.advance_time_and_run()
-        self.assertEventCalledWith("service_settings_start", settings_label='Test2', value_label="Yes")
+        self.assertEventCalledWith("service_settings_edit", settings_label='Test2', value_label="Yes")
 
         # exit setting change
         self.hit_and_release_switch("s_service_esc")

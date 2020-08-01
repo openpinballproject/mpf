@@ -8,6 +8,7 @@ from mpf.file_interfaces.yaml_interface import MpfLoader
 class TestYamlInterface(unittest.TestCase):
 
     def test_round_trip(self):
+        self.maxDiff = None
 
         orig_config = """\
 hardware:
@@ -16,13 +17,13 @@ hardware:
     dmd: smartmatrix
 
 config:
-- portconfig.yaml
-- switches.yaml
-- coils.yaml
-- devices.yaml
-- keyboard.yaml
-- virtual.yaml
-- images.yaml
+-   portconfig.yaml
+-   switches.yaml
+-   coils.yaml
+-   devices.yaml
+-   keyboard.yaml
+-   virtual.yaml
+-   images.yaml
 
 dmd:
     physical: false
@@ -48,8 +49,8 @@ window:
         thickness: 2
 
 modes:
-- base
-- airlock_multiball
+-   base
+-   airlock_multiball
 
 sound_system:
     buffer: 512
@@ -102,15 +103,38 @@ str_2: 032
 str_3: on
 str_4: off
 str_5: 123e45
+str_6: hi
+str_7: 2:10
+str_8: 2:10.1
 bool_1: yes
 bool_2: no
 bool_3: true
 bool_4: false
-str_6: hi
+bool_5: True
+bool_6: False
 int_1: 123
-float_1: 1.0
+yaml.scalarfloat.ScalarFloat_1: 1.0
 
         """
+
+        values = {
+            "str_1": "+1",
+            "str_2": "032",
+            "str_3": "on",
+            "str_4": "off",
+            "str_5": "123e45",
+            "str_6": "hi",
+            "str_7": "2:10",
+            "str_8": "2:10.1",
+            "bool_1": True,
+            "bool_2": False,
+            "bool_3": True,
+            "bool_4": False,
+            "bool_5": True,
+            "bool_6": False,
+            "int_1": 123,
+            "yaml.scalarfloat.ScalarFloat_1": 1.0,
+        }
 
         parsed_config = YamlRoundtrip.process(config)
 
@@ -118,3 +142,4 @@ float_1: 1.0
             if not type(v) is eval(k.split('_')[0]):
                 raise AssertionError('YAML value "{}" is {}, not {}'.format(v,
                     type(v), eval(k.split('_')[0])))
+            self.assertEqual(values[k], v)

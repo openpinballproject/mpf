@@ -9,11 +9,12 @@ class FASTGIString(LightPlatformSoftwareFade):
 
     """A FAST GI string in a WPC machine."""
 
+    __slots__ = ["log", "send"]
+
     def __init__(self, number, sender, machine, software_fade_ms: int) -> None:
         """Initialise GI string."""
-        super().__init__(machine.clock.loop, software_fade_ms)
+        super().__init__(number, machine.clock.loop, software_fade_ms)
         self.log = logging.getLogger('FASTGIString.0x' + str(number))
-        self.number = number
         self.send = sender
 
     def set_brightness(self, brightness: float):
@@ -27,3 +28,19 @@ class FASTGIString(LightPlatformSoftwareFade):
 
         self.send('GI:{},{}'.format(self.number,
                                     Util.int_to_hex_string(brightness)))
+
+    def get_board_name(self):
+        """Return the board of this light."""
+        return "FAST WPC"
+
+    def is_successor_of(self, other):
+        """Return true if the other light has the previous number."""
+        raise AssertionError("Not possible in FASTGI.")
+
+    def get_successor_number(self):
+        """Return next number."""
+        raise AssertionError("Not possible in FASTGI.")
+
+    def __lt__(self, other):
+        """Order lights by string."""
+        return self.number < other.number
